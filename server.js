@@ -22,8 +22,7 @@ const loadCredentials = () => {
 
 // Mock Discord Server Database Structure
 const jungleServers = {
-// ...
-
+  "canopy-hub": {
     name: "Canopy Hub 🌳",
     textChannels: { "general": "💬 general-chat", "banana-talk": "🍌 banana-market" },
     voiceChannels: { "lounge": "🔊 The Lounge", "raid-room": "🦍 Gorilla Raid" }
