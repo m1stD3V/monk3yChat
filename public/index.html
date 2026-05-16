@@ -1,135 +1,683 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>monkey.chat | Server Space</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-guilds: #070a08;
-            --bg-channels: #0f1511;
-            --bg-chat: #141d17;
-            --banana: #f4d03f;
-            --text-light: #f0f4f1;
-            --text-muted: #7f9184;
-            --danger: #e74c3c;
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
-        body { background: var(--bg-chat); color: var(--text-light); height: 100vh; display: flex; overflow: hidden; }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>monkey.chat</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-0: #050806;
+      --bg-1: #090d0a;
+      --bg-2: #0e1510;
+      --bg-3: #141d16;
+      --bg-4: #1c2a1e;
+      --banana: #f0c93a;
+      --banana-dim: #b8971e;
+      --banana-glow: rgba(240, 201, 58, 0.15);
+      --green-accent: #4ade80;
+      --red: #f87171;
+      --text-1: #e8f0ea;
+      --text-2: #a3b8a7;
+      --text-3: #5c7361;
+      --border: rgba(255,255,255,0.06);
+      --border-strong: rgba(255,255,255,0.12);
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+    }
 
-        /* Column 1: Guilds Icons */
-        .guilds-bar { width: 72px; background: var(--bg-guilds); display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 8px; }
-        .guild-icon { width: 48px; height: 48px; background: #223126; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.3rem; cursor: pointer; transition: all 0.2s; }
-        .guild-icon:hover, .guild-icon.active { border-radius: 16px; background: var(--banana); color: #000; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Syne', sans-serif;
+      background: var(--bg-0);
+      color: var(--text-1);
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+    }
 
-        /* Column 2: Channels */
-        .channels-sidebar { width: 240px; background: var(--bg-channels); display: flex; flex-direction: column; }
-        .server-header { padding: 16px; font-weight: 700; border-bottom: 1px solid rgba(255,255,255,0.05); }
-        .channel-list { flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
-        .ch-category { font-size: 0.7rem; uppercase; font-weight: 700; color: var(--text-muted); margin-top: 16px; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;}
-        .channel-item { padding: 8px 12px; border-radius: 6px; font-size: 0.9rem; color: var(--text-muted); cursor: pointer; }
-        .channel-item:hover, .channel-item.active { background: rgba(255,255,255,0.05); color: var(--text-light); }
-        .channel-item.active-voice { color: var(--banana); font-weight: 600; }
+    /* ─── SCROLLBARS ─────────────────────────── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 99px; }
 
-        /* Column 3: Center & Video Grid Space */
-        .main-content { flex: 1; display: flex; flex-direction: column; position: relative; }
-        .view-header { height: 56px; border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; padding: 0 20px; font-weight: 600; }
-        
-        .content-split { flex: 1; display: flex; overflow: hidden; }
-        .video-arena { flex: 2; background: #0b0f0c; padding: 12px; display: flex; flex-direction: column; gap: 12px; position: relative; }
-        .video-grid { 
-            flex: 1; 
-            display: grid; 
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); 
-            gap: 12px; 
-            overflow-y: auto; 
-            align-content: start; 
-            padding-bottom: 80px; /* Space for dock */
-        }
-        
-        .video-box { 
-            background: #1a261d; 
-            border-radius: 8px; 
-            overflow: hidden; 
-            position: relative; 
-            aspect-ratio: 4/3; /* Better for portrait/squarish mobile cams */
-            border: 1px solid rgba(255,255,255,0.1); 
-            transition: transform 0.2s;
-        }
-        .video-box:hover { transform: scale(1.02); z-index: 5; }
-        .video-box video { width: 100%; height: 100%; object-fit: cover; }
-        .user-tag { position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.6); padding: 4px 8px; border-radius: 6px; font-size: 0.75rem; }
+    /* ─── LOGIN OVERLAY ──────────────────────── */
+    #loginOverlay {
+      position: fixed; inset: 0;
+      background: var(--bg-0);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 2000;
+      backdrop-filter: blur(20px);
+    }
+    .login-card {
+      background: var(--bg-2);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      padding: 40px 36px;
+      width: 340px;
+      display: flex; flex-direction: column; gap: 0;
+    }
+    .login-logo {
+      font-size: 1.8rem; font-weight: 800;
+      color: var(--banana);
+      letter-spacing: -1px;
+      margin-bottom: 6px;
+    }
+    .login-sub {
+      font-size: 0.78rem; color: var(--text-3);
+      font-family: 'JetBrains Mono', monospace;
+      margin-bottom: 32px;
+    }
+    .login-card label {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 1px;
+      text-transform: uppercase; color: var(--text-3);
+      margin-bottom: 6px; display: block;
+    }
+    .login-card input {
+      width: 100%; padding: 11px 14px;
+      background: var(--bg-1); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm); color: var(--text-1);
+      font-family: 'JetBrains Mono', monospace; font-size: 0.9rem;
+      outline: none; margin-bottom: 18px;
+      transition: border-color 0.2s;
+    }
+    .login-card input:focus { border-color: var(--banana); }
+    #loginBtn {
+      width: 100%; padding: 13px; margin-top: 6px;
+      background: var(--banana); border: none;
+      border-radius: var(--radius-sm); font-family: 'Syne', sans-serif;
+      font-weight: 700; font-size: 0.95rem; cursor: pointer;
+      color: #050806; letter-spacing: 0.5px;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+    #loginBtn:hover { opacity: 0.9; }
+    #loginBtn:active { transform: scale(0.98); }
+    #loginError {
+      font-size: 0.8rem; color: var(--red);
+      text-align: center; margin-top: 14px;
+      display: none; font-family: 'JetBrains Mono', monospace;
+    }
 
-        /* Text Chat Sub-panel */
-        .chat-sub-panel { flex: 1; background: var(--bg-chat); border-left: 1px solid rgba(255,255,255,0.05); display: flex; flex-direction: column; }
-        .msg-feed { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-        .msg-line { font-size: 0.9rem; line-height: 1.4; }
-        .msg-line b { color: var(--banana); margin-right: 6px; }
-        .input-bar { padding: 16px; background: rgba(0,0,0,0.2); display: flex; }
-        .input-bar input { flex: 1; background: rgba(255,255,255,0.05); border: none; padding: 12px; border-radius: 8px; color: #fff; outline: none; }
+    /* ─── GUILDS BAR ─────────────────────────── */
+    .guilds-bar {
+      width: 68px; background: var(--bg-1);
+      display: flex; flex-direction: column;
+      align-items: center; padding: 12px 0; gap: 6px;
+      border-right: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .guild-divider {
+      width: 32px; height: 1px;
+      background: var(--border-strong); margin: 4px 0;
+    }
+    .guild-icon {
+      width: 44px; height: 44px;
+      background: var(--bg-3); border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem; cursor: pointer;
+      transition: all 0.18s ease; border: 2px solid transparent;
+      position: relative; flex-shrink: 0;
+      font-weight: 700; color: var(--text-2);
+    }
+    .guild-icon:hover { border-radius: var(--radius-md); background: var(--bg-4); color: var(--text-1); }
+    .guild-icon.active {
+      border-radius: var(--radius-md);
+      background: var(--banana-glow);
+      border-color: var(--banana);
+      color: var(--banana);
+    }
+    .guild-icon .unread-pip {
+      position: absolute; bottom: -2px; right: -2px;
+      width: 10px; height: 10px;
+      background: var(--green-accent); border-radius: 50%;
+      border: 2px solid var(--bg-1); display: none;
+    }
+    .guild-icon .unread-pip.show { display: block; }
 
-        /* Bottom Floating Bar inside Video Arena */
-        .dock { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: #121a14; border: 1px solid rgba(255,255,255,0.1); padding: 8px 16px; border-radius: 16px; display: flex; gap: 12px; z-index: 10; }
-        .dock button { background: rgba(255,255,255,0.05); border: none; color: white; width: 40px; height: 40px; border-radius: 8px; cursor: pointer; font-size: 1.1rem; }
-        .dock button.hangup { background: var(--danger); }
-        .dock button.active { background: var(--banana); color: #000; }
-    </style>
+    /* ─── CHANNELS SIDEBAR ───────────────────── */
+    .channels-sidebar {
+      width: 232px; background: var(--bg-2);
+      display: flex; flex-direction: column;
+      border-right: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .server-header {
+      padding: 16px; font-weight: 800; font-size: 0.95rem;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      letter-spacing: -0.3px;
+    }
+    .server-header-actions { display: flex; gap: 6px; }
+    .icon-btn {
+      width: 28px; height: 28px; border-radius: var(--radius-sm);
+      border: none; background: transparent; color: var(--text-3);
+      cursor: pointer; font-size: 0.85rem;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    .icon-btn:hover { background: var(--bg-4); color: var(--text-1); }
+    .channel-list { flex: 1; padding: 10px 8px; overflow-y: auto; }
+    .ch-category {
+      font-size: 0.63rem; font-weight: 700; letter-spacing: 1.2px;
+      text-transform: uppercase; color: var(--text-3);
+      padding: 14px 8px 5px; display: flex;
+      align-items: center; justify-content: space-between;
+    }
+    .ch-category .add-ch-btn {
+      width: 16px; height: 16px; display: flex; align-items: center;
+      justify-content: center; border-radius: 3px; cursor: pointer;
+      color: var(--text-3); font-size: 0.9rem;
+      transition: color 0.15s; line-height: 1;
+    }
+    .ch-category .add-ch-btn:hover { color: var(--text-1); }
+    .channel-item {
+      padding: 7px 10px; border-radius: var(--radius-sm);
+      font-size: 0.875rem; color: var(--text-3);
+      cursor: pointer; display: flex; align-items: center;
+      gap: 8px; transition: background 0.12s, color 0.12s;
+      user-select: none; position: relative;
+    }
+    .channel-item:hover { background: var(--bg-3); color: var(--text-2); }
+    .channel-item.active { background: var(--bg-4); color: var(--text-1); font-weight: 600; }
+    .channel-item.active-voice { color: var(--green-accent); font-weight: 600; }
+    .channel-item .ch-icon { flex-shrink: 0; font-size: 0.85rem; }
+    .channel-item .unread-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--banana); margin-left: auto; flex-shrink: 0; display: none;
+    }
+    .channel-item.has-unread .unread-dot { display: block; }
+    .channel-item .user-count {
+      margin-left: auto; font-size: 0.7rem;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-3); background: var(--bg-1);
+      padding: 2px 6px; border-radius: 99px; display: none;
+    }
+    .channel-item.vc-active .user-count { display: block; }
+
+    /* User panel at bottom of sidebar */
+    .user-panel {
+      padding: 10px 12px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px;
+      background: var(--bg-1);
+    }
+    .user-avatar {
+      width: 34px; height: 34px; border-radius: 50%;
+      background: var(--banana-glow); border: 2px solid var(--banana);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.85rem; font-weight: 700; color: var(--banana);
+      flex-shrink: 0;
+    }
+    .user-panel-info { flex: 1; overflow: hidden; }
+    .user-panel-name {
+      font-size: 0.85rem; font-weight: 700;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .user-panel-status {
+      font-size: 0.7rem; color: var(--green-accent);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .user-panel-status.muted { color: var(--red); }
+
+    /* ─── MAIN CONTENT ───────────────────────── */
+    .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .view-header {
+      height: 52px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center;
+      padding: 0 20px; gap: 12px; flex-shrink: 0;
+    }
+    .view-header-icon { color: var(--text-3); font-size: 1rem; }
+    .view-header-name { font-weight: 700; font-size: 0.95rem; letter-spacing: -0.2px; }
+    .view-header-sep { width: 1px; height: 18px; background: var(--border-strong); }
+    .view-header-topic {
+      font-size: 0.8rem; color: var(--text-3);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .view-header-actions { margin-left: auto; display: flex; gap: 6px; }
+
+    .content-split { flex: 1; display: flex; overflow: hidden; }
+
+    /* ─── VIDEO ARENA ────────────────────────── */
+    .video-arena {
+      flex: 2; background: var(--bg-0);
+      padding: 12px; display: flex; flex-direction: column;
+      position: relative; overflow: hidden;
+    }
+    .video-arena-empty {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      color: var(--text-3); gap: 12px;
+      font-size: 0.85rem; font-family: 'JetBrains Mono', monospace;
+    }
+    .video-arena-empty .empty-icon { font-size: 3rem; opacity: 0.3; }
+    .video-grid {
+      flex: 1; display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 10px; overflow-y: auto; align-content: start;
+      padding-bottom: 72px;
+    }
+    .video-box {
+      background: var(--bg-3); border-radius: var(--radius-md);
+      overflow: hidden; position: relative;
+      aspect-ratio: 4/3;
+      border: 1px solid var(--border);
+      transition: border-color 0.2s;
+    }
+    .video-box.speaking { border-color: var(--green-accent); }
+    .video-box video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .video-box .no-video-placeholder {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2rem; font-weight: 800; color: var(--banana);
+      background: var(--bg-3);
+    }
+    .user-tag {
+      position: absolute; bottom: 8px; left: 8px;
+      background: rgba(5,8,6,0.75); backdrop-filter: blur(6px);
+      padding: 4px 9px; border-radius: var(--radius-sm);
+      font-size: 0.72rem; font-weight: 600;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .user-tag .mic-status { font-size: 0.7rem; }
+    .video-box .admin-badge {
+      position: absolute; top: 8px; right: 8px;
+      background: var(--banana); color: #050806;
+      font-size: 0.6rem; font-weight: 800; letter-spacing: 0.5px;
+      padding: 2px 6px; border-radius: 4px; text-transform: uppercase;
+    }
+
+    /* ─── VOICE DOCK ─────────────────────────── */
+    .dock {
+      position: absolute; bottom: 16px; left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-2); border: 1px solid var(--border-strong);
+      padding: 8px 14px; border-radius: var(--radius-lg);
+      display: flex; gap: 8px; z-index: 10; align-items: center;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .dock-label {
+      font-size: 0.7rem; font-family: 'JetBrains Mono', monospace;
+      color: var(--text-3); margin-right: 4px;
+    }
+    .dock button {
+      background: var(--bg-4); border: 1px solid var(--border);
+      color: var(--text-1); width: 38px; height: 38px;
+      border-radius: var(--radius-sm); cursor: pointer;
+      font-size: 1rem; transition: all 0.15s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .dock button:hover { background: var(--bg-3); border-color: var(--border-strong); }
+    .dock button.muted { background: rgba(248,113,113,0.15); border-color: var(--red); color: var(--red); }
+    .dock button.hangup { background: rgba(248,113,113,0.2); border-color: var(--red); color: var(--red); }
+    .dock button.hangup:hover { background: var(--red); color: #fff; }
+    .dock-sep { width: 1px; height: 24px; background: var(--border-strong); }
+
+    /* ─── CHAT PANEL ─────────────────────────── */
+    .chat-sub-panel {
+      flex: 1; background: var(--bg-3);
+      border-left: 1px solid var(--border);
+      display: flex; flex-direction: column; min-width: 280px;
+    }
+    .msg-feed { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+
+    /* Message grouping */
+    .msg-group { display: flex; flex-direction: column; gap: 0; margin-bottom: 12px; }
+    .msg-group-header {
+      display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px;
+    }
+    .msg-author {
+      font-size: 0.85rem; font-weight: 700;
+      color: var(--banana); cursor: default;
+    }
+    .msg-author.is-admin { color: var(--green-accent); }
+    .msg-timestamp {
+      font-size: 0.68rem; color: var(--text-3);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .msg-body {
+      font-size: 0.85rem; line-height: 1.55;
+      color: var(--text-2);
+      word-break: break-word;      /* ← wraps long words/URLs */
+      overflow-wrap: break-word;   /* ← belt & suspenders */
+      white-space: pre-wrap;       /* ← preserves intentional newlines */
+      padding-left: 2px;
+    }
+    .msg-body a { color: var(--banana); text-decoration: underline; }
+
+    /* System messages */
+    .msg-system {
+      font-size: 0.75rem; color: var(--text-3);
+      font-family: 'JetBrains Mono', monospace;
+      text-align: center; padding: 6px 0;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .msg-system::before, .msg-system::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* Input area */
+    .input-area {
+      padding: 12px 14px; border-top: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .input-row { display: flex; gap: 8px; align-items: flex-end; }
+    #textInput {
+      flex: 1; background: var(--bg-1); border: 1px solid var(--border-strong);
+      padding: 10px 14px; border-radius: var(--radius-md);
+      color: var(--text-1); font-family: 'Syne', sans-serif;
+      font-size: 0.875rem; outline: none; resize: none;
+      max-height: 120px; min-height: 42px;
+      line-height: 1.4; transition: border-color 0.2s;
+      overflow-y: auto;
+    }
+    #textInput:focus { border-color: var(--banana-dim); }
+    #textInput::placeholder { color: var(--text-3); }
+    #sendBtn {
+      width: 42px; height: 42px; flex-shrink: 0;
+      background: var(--banana); border: none;
+      border-radius: var(--radius-md); cursor: pointer;
+      color: #050806; font-size: 1rem;
+      display: flex; align-items: center; justify-content: center;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    #sendBtn:hover { opacity: 0.88; }
+    #sendBtn:active { transform: scale(0.93); }
+    #sendBtn:disabled { opacity: 0.3; cursor: default; }
+    .input-hint {
+      font-size: 0.65rem; color: var(--text-3);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ─── ADMIN PANEL ────────────────────────── */
+    #adminPanel {
+      position: fixed; inset: 0;
+      background: rgba(5,8,6,0.85); backdrop-filter: blur(12px);
+      z-index: 1500; display: none;
+      align-items: center; justify-content: center;
+    }
+    #adminPanel.open { display: flex; }
+    .admin-modal {
+      background: var(--bg-2); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg); width: 580px; max-height: 85vh;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .admin-header {
+      padding: 20px 24px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .admin-header h2 {
+      font-size: 1rem; font-weight: 800; letter-spacing: -0.3px;
+    }
+    .admin-header .admin-badge-label {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.8px;
+      background: var(--banana); color: #050806;
+      padding: 3px 8px; border-radius: 4px; text-transform: uppercase;
+    }
+    .admin-body { padding: 20px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 24px; }
+    .admin-section-title {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 1.2px;
+      text-transform: uppercase; color: var(--text-3); margin-bottom: 10px;
+    }
+    .admin-user-list { display: flex; flex-direction: column; gap: 6px; }
+    .admin-user-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 12px; background: var(--bg-3);
+      border-radius: var(--radius-sm); border: 1px solid var(--border);
+    }
+    .admin-user-avatar {
+      width: 30px; height: 30px; border-radius: 50%;
+      background: var(--bg-4); display: flex; align-items: center;
+      justify-content: center; font-weight: 700; font-size: 0.8rem;
+      color: var(--text-2); flex-shrink: 0;
+    }
+    .admin-user-name { flex: 1; font-size: 0.875rem; font-weight: 600; }
+    .admin-user-role {
+      font-size: 0.65rem; font-family: 'JetBrains Mono', monospace;
+      color: var(--text-3); background: var(--bg-1);
+      padding: 2px 7px; border-radius: 99px;
+    }
+    .admin-user-role.owner { color: var(--banana); }
+    .admin-user-role.admin { color: var(--green-accent); }
+    .admin-actions { display: flex; gap: 6px; }
+    .admin-action-btn {
+      padding: 5px 10px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong); background: transparent;
+      color: var(--text-2); font-family: 'Syne', sans-serif;
+      font-size: 0.75rem; cursor: pointer; transition: all 0.15s;
+    }
+    .admin-action-btn:hover { background: var(--bg-4); color: var(--text-1); }
+    .admin-action-btn.danger { color: var(--red); border-color: rgba(248,113,113,0.3); }
+    .admin-action-btn.danger:hover { background: rgba(248,113,113,0.1); }
+    .admin-channel-list { display: flex; flex-direction: column; gap: 6px; }
+    .admin-channel-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 12px; background: var(--bg-3);
+      border-radius: var(--radius-sm); border: 1px solid var(--border);
+    }
+    .admin-channel-name { flex: 1; font-size: 0.875rem; }
+    .admin-channel-type {
+      font-size: 0.65rem; color: var(--text-3);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .add-channel-form {
+      display: flex; gap: 8px; margin-top: 10px;
+    }
+    .add-channel-form input, .add-channel-form select {
+      flex: 1; padding: 9px 12px;
+      background: var(--bg-1); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm); color: var(--text-1);
+      font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+      outline: none;
+    }
+    .add-channel-form button {
+      padding: 9px 16px; background: var(--banana); border: none;
+      border-radius: var(--radius-sm); font-family: 'Syne', sans-serif;
+      font-weight: 700; font-size: 0.8rem; color: #050806; cursor: pointer;
+    }
+    .admin-footer {
+      padding: 14px 24px; border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end;
+    }
+    .admin-close-btn {
+      padding: 9px 20px; background: transparent;
+      border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+      color: var(--text-2); font-family: 'Syne', sans-serif;
+      font-weight: 600; font-size: 0.85rem; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .admin-close-btn:hover { background: var(--bg-4); color: var(--text-1); }
+
+    /* ─── TOAST NOTIFICATIONS ────────────────── */
+    #toastContainer {
+      position: fixed; bottom: 24px; right: 24px;
+      display: flex; flex-direction: column; gap: 8px;
+      z-index: 3000; pointer-events: none;
+    }
+    .toast {
+      background: var(--bg-2); border: 1px solid var(--border-strong);
+      padding: 12px 16px; border-radius: var(--radius-md);
+      font-size: 0.82rem; color: var(--text-1);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      display: flex; align-items: center; gap: 10px;
+      min-width: 260px; max-width: 340px;
+      animation: toastIn 0.25s ease forwards;
+      pointer-events: all;
+    }
+    .toast.toast-exit { animation: toastOut 0.25s ease forwards; }
+    .toast-icon { font-size: 1rem; flex-shrink: 0; }
+    .toast-msg { flex: 1; line-height: 1.4; }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(12px) scale(0.96); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes toastOut {
+      from { opacity: 1; transform: translateY(0); }
+      to   { opacity: 0; transform: translateY(6px); }
+    }
+
+    /* ─── CONTEXT MENU ───────────────────────── */
+    #contextMenu {
+      position: fixed; background: var(--bg-2);
+      border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+      padding: 6px; z-index: 2500; display: none; min-width: 160px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .ctx-item {
+      padding: 8px 12px; border-radius: var(--radius-sm);
+      font-size: 0.82rem; cursor: pointer; display: flex; align-items: center;
+      gap: 8px; transition: background 0.12s; color: var(--text-2);
+    }
+    .ctx-item:hover { background: var(--bg-4); color: var(--text-1); }
+    .ctx-item.danger { color: var(--red); }
+    .ctx-item.danger:hover { background: rgba(248,113,113,0.1); }
+    .ctx-sep { height: 1px; background: var(--border); margin: 4px 0; }
+  </style>
 </head>
 <body>
 
-    <div id="loginOverlay" style="position: fixed; inset: 0; background: #070a08; display: flex; align-items: center; justify-content: center; z-index: 1000;">
-        <div style="background: #141d17; padding: 32px; border-radius: 12px; text-align: center; border: 1px solid rgba(255,255,255,0.1); width: 300px;">
-            <h2 style="margin-bottom: 24px;">Login to Monkey Chat</h2>
-            <input type="text" id="username" placeholder="Username" style="width: 100%; padding: 12px; margin-bottom: 12px; background: rgba(255,255,255,0.05); border: none; border-radius: 6px; color: #fff;">
-            <input type="password" id="password" placeholder="Password" style="width: 100%; padding: 12px; margin-bottom: 24px; background: rgba(255,255,255,0.05); border: none; border-radius: 6px; color: #fff;">
-            <button id="loginBtn" style="width: 100%; padding: 12px; background: #f4d03f; border: none; border-radius: 6px; font-weight: 700; cursor: pointer;">Connect</button>
-            <p id="loginError" style="color: #e74c3c; margin-top: 12px; display: none;">Invalid credentials</p>
+  <!-- ── LOGIN OVERLAY ──────────────────────────── -->
+  <div id="loginOverlay">
+    <div class="login-card">
+      <div class="login-logo">monkey.chat</div>
+      <div class="login-sub">// connect to the jungle</div>
+      <label for="username">Username</label>
+      <input type="text" id="username" placeholder="your_handle" autocomplete="off">
+      <label for="password">Password</label>
+      <input type="password" id="password" placeholder="••••••••">
+      <button id="loginBtn">Connect</button>
+      <p id="loginError">⚠ Invalid credentials</p>
+    </div>
+  </div>
+
+  <!-- ── ADMIN PANEL ─────────────────────────────── -->
+  <div id="adminPanel">
+    <div class="admin-modal">
+      <div class="admin-header">
+        <h2>Server Management</h2>
+        <span class="admin-badge-label">Admin</span>
+      </div>
+      <div class="admin-body">
+        <!-- Members section -->
+        <div>
+          <div class="admin-section-title">Members</div>
+          <div class="admin-user-list" id="adminUserList">
+            <div style="color: var(--text-3); font-size: 0.8rem; font-family: 'JetBrains Mono', monospace;">
+              No users online
+            </div>
+          </div>
         </div>
+        <!-- Channels section -->
+        <div>
+          <div class="admin-section-title">Channels</div>
+          <div class="admin-channel-list" id="adminChannelList"></div>
+          <div class="add-channel-form">
+            <input type="text" id="newChannelName" placeholder="channel-name">
+            <select id="newChannelType">
+              <option value="text">💬 Text</option>
+              <option value="voice">🔊 Voice</option>
+            </select>
+            <button id="addChannelBtn">Add</button>
+          </div>
+        </div>
+        <!-- Server settings -->
+        <div>
+          <div class="admin-section-title">Danger Zone</div>
+          <div style="display:flex; gap:8px;">
+            <button class="admin-action-btn danger" id="clearCacheBtn">🗑 Clear Message Cache</button>
+          </div>
+        </div>
+      </div>
+      <div class="admin-footer">
+        <button class="admin-close-btn" id="closeAdminPanel">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CONTEXT MENU ────────────────────────────── -->
+  <div id="contextMenu">
+    <div class="ctx-item" id="ctxMention">💬 Mention User</div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item danger" id="ctxKick">🚫 Kick from Voice</div>
+  </div>
+
+  <!-- ── TOAST CONTAINER ────────────────────────── -->
+  <div id="toastContainer"></div>
+
+  <!-- ── GUILDS BAR ──────────────────────────────── -->
+  <nav class="guilds-bar" id="guildsBar">
+    <div class="guild-icon active" id="homeGuildIcon" style="font-weight:800; font-size:0.75rem; color:var(--banana); letter-spacing:-0.5px;">M.C</div>
+    <div class="guild-divider"></div>
+  </nav>
+
+  <!-- ── CHANNELS SIDEBAR ───────────────────────── -->
+  <aside class="channels-sidebar">
+    <div class="server-header">
+      <span id="currentServerName">Monkey Chat</span>
+      <div class="server-header-actions">
+        <button class="icon-btn" id="adminPanelBtn" title="Server Settings" style="display:none;">⚙️</button>
+        <button class="icon-btn" id="membersBtn" title="Members">👥</button>
+      </div>
+    </div>
+    <div class="channel-list" id="channelListContainer"></div>
+    <div class="user-panel">
+      <div class="user-avatar" id="selfAvatar">?</div>
+      <div class="user-panel-info">
+        <div class="user-panel-name" id="selfName">Not logged in</div>
+        <div class="user-panel-status" id="selfStatus">● online</div>
+      </div>
+      <button class="icon-btn" id="selfSettingsBtn" title="User Settings">⚙</button>
+    </div>
+  </aside>
+
+  <!-- ── MAIN CONTENT ────────────────────────────── -->
+  <main class="main-content">
+    <div class="view-header">
+      <span class="view-header-icon" id="headerIcon">💬</span>
+      <span class="view-header-name" id="activeChannelHeader">select a channel</span>
+      <div class="view-header-sep"></div>
+      <span class="view-header-topic" id="channelTopic">Welcome to monkey.chat</span>
+      <div class="view-header-actions">
+        <button class="icon-btn" title="Pin Messages">📌</button>
+        <button class="icon-btn" title="Search">🔍</button>
+      </div>
     </div>
 
-    <!-- Column 1: Server Sidebar -->
-    <nav class="guilds-bar" id="guildsBar">
-        <div class="guild-icon active" style="font-weight:bold; font-size:0.9rem; color:var(--banana)">M.C</div>
-        <!-- Injected via JS -->
-    </nav>
-
-    <!-- Column 2: Channels Menu -->
-    <aside class="channels-sidebar">
-        <div class="server-header" id="currentServerName">Monkey Servers</div>
-        <div class="channel-list" id="channelListContainer">
-            <!-- Injected via JS -->
+    <div class="content-split">
+      <!-- Video Arena -->
+      <div class="video-arena" id="videoArena">
+        <div class="video-arena-empty" id="videoArenaEmpty">
+          <div class="empty-icon">🎙️</div>
+          <span>Join a voice channel to connect</span>
         </div>
-    </aside>
-
-    <!-- Column 3: Call & Communications Center -->
-    <main class="main-content">
-        <div class="view-header" id="activeChannelHeader"># select-a-channel</div>
-        
-        <div class="content-split">
-            <!-- Left Half: Videos -->
-            <div class="video-arena">
-                <div class="video-grid" id="videoGrid">
-                    <!-- Local and Remote Video Boxes will spawn here dynamically -->
-                </div>
-
-                <div class="dock" id="voiceDock" style="display: none;">
-                    <button id="toggleMic">🎙️</button>
-                    <button id="toggleVid">📹</button>
-                    <button class="hangup" id="disconnectVoice">❌</button>
-                </div>
-            </div>
-
-            <!-- Right Half: Chat -->
-            <div class="chat-sub-panel">
-                <div class="msg-feed" id="msgFeed"></div>
-                <div class="input-bar">
-                    <input type="text" id="textInput" placeholder="Message channel...">
-                </div>
-            </div>
+        <div class="video-grid" id="videoGrid" style="display:none;"></div>
+        <div class="dock" id="voiceDock" style="display:none;">
+          <span class="dock-label" id="dockChannelName">—</span>
+          <div class="dock-sep"></div>
+          <button id="toggleMic" title="Toggle Mic">🎙️</button>
+          <button id="toggleVid" title="Toggle Camera">📹</button>
+          <div class="dock-sep"></div>
+          <button class="hangup" id="disconnectVoice" title="Leave Call">📵</button>
         </div>
-    </main>
+      </div>
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="app.js"></script>
+      <!-- Chat Panel -->
+      <div class="chat-sub-panel">
+        <div class="msg-feed" id="msgFeed">
+          <div class="msg-system">channel history loaded</div>
+        </div>
+        <div class="input-area">
+          <div class="input-row">
+            <textarea id="textInput" placeholder="Message channel..." rows="1"></textarea>
+            <button id="sendBtn" title="Send message">➤</button>
+          </div>
+          <div class="input-hint">Enter to send · Shift+Enter for new line</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

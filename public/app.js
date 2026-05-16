@@ -1,368 +1,546 @@
 // public/app.js
-const socket = io({
-  transports: ['websocket'],
-  upgrade: false
-});
 
-// High-Scale Optimization Constants
+const socket = io({ transports: ['websocket'], upgrade: false });
+
+// ─── CONSTANTS ───────────────────────────────────────────
 const MEDIA_CONSTRAINTS = {
-  video: {
-    width: { ideal: 640 },
-    height: { ideal: 480 },
-    frameRate: { ideal: 15, max: 20 }
-  },
-  audio: {
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true
-  }
+  video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 20 } },
+  audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
 };
-const MAX_VIDEO_BITRATE = 250000; // 250kbps for 10-person mesh stability
+const MAX_VIDEO_BITRATE = 250000;
+const MSG_CACHE_KEY = 'mc_msg_cache';
+const MAX_CACHED_MSGS = 100; // per channel
+const MSG_GROUP_THRESHOLD = 5 * 60 * 1000; // 5 minutes → new group header
 
-// Production WebRTC Configuration utilizing your dedicated Metered.ca infrastructure Relay
 const rtcConfig = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' }, // Public Google STUN
-    { urls: 'stun:stun.metered.ca:80' },       // Metered STUN
-    {
-      urls: 'turn:global.turn.metered.ca:80',
-      username: '3668af38c652028b1a39b682',
-      credential: 'TdkzU0crNP4oPMm1'
-    },
-    {
-      urls: 'turn:global.turn.metered.ca:443?transport=tcp', // Fallback for strict firewalls/ports
-      username: '3668af38c652028b1a39b682',
-      credential: 'TdkzU0crNP4oPMm1'
-    }
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.metered.ca:80' },
+    { urls: 'turn:global.turn.metered.ca:80', username: '3668af38c652028b1a39b682', credential: 'TdkzU0crNP4oPMm1' },
+    { urls: 'turn:global.turn.metered.ca:443?transport=tcp', username: '3668af38c652028b1a39b682', credential: 'TdkzU0crNP4oPMm1' }
   ],
   bundlePolicy: 'max-bundle',
-  iceCandidatePoolSize: 10 // Pre-gather candidates
+  iceCandidatePoolSize: 10
 };
 
+// ─── STATE ───────────────────────────────────────────────
 let localStream = null;
-let peerConnections = {}; // Format: { [socketId]: { pc, iceBuffer, makingOffer, ignoreOffer, isPolite, isSettingRemoteAnswerPending } }
-let remoteStreams = {};   // Format: { [socketId]: MediaStream }
+let peerConnections = {};
+let remoteStreams = {};
 let activeServers = {};
 let currentServerId = null;
 let currentTextChannelId = null;
 let currentVoiceChannelId = null;
-// ... existing constants ...
-let myName = "Monkey_" + Math.floor(Math.random() * 900);
+let myName = '';
+let myRole = 'member'; // 'member' | 'admin' | 'owner'
+let onlineUsers = {};  // socketId → { name, role }
+let lastMsgAuthor = null;
+let lastMsgTime = null;
 
-// UI Elements
-const guildsBar = document.getElementById('guildsBar');
-const channelListContainer = document.getElementById('channelListContainer');
-const currentServerName = document.getElementById('currentServerName');
-const activeChannelHeader = document.getElementById('activeChannelHeader');
-const videoGrid = document.getElementById('videoGrid');
-const msgFeed = document.getElementById('msgFeed');
-const textInput = document.getElementById('textInput');
-const voiceDock = document.getElementById('voiceDock');
-const loginOverlay = document.getElementById('loginOverlay');
-const loginBtn = document.getElementById('loginBtn');
-const usernameInput = document.getElementById('username');
-const passwordInput = document.getElementById('password');
-const loginError = document.getElementById('loginError');
+// ─── UI ELEMENTS ─────────────────────────────────────────
+const guildsBar             = document.getElementById('guildsBar');
+const channelListContainer  = document.getElementById('channelListContainer');
+const currentServerName     = document.getElementById('currentServerName');
+const activeChannelHeader   = document.getElementById('activeChannelHeader');
+const channelTopic          = document.getElementById('channelTopic');
+const headerIcon            = document.getElementById('headerIcon');
+const videoGrid             = document.getElementById('videoGrid');
+const videoArenaEmpty       = document.getElementById('videoArenaEmpty');
+const msgFeed               = document.getElementById('msgFeed');
+const textInput             = document.getElementById('textInput');
+const sendBtn               = document.getElementById('sendBtn');
+const voiceDock             = document.getElementById('voiceDock');
+const dockChannelName       = document.getElementById('dockChannelName');
+const loginOverlay          = document.getElementById('loginOverlay');
+const loginBtn              = document.getElementById('loginBtn');
+const usernameInput         = document.getElementById('username');
+const passwordInput         = document.getElementById('password');
+const loginError            = document.getElementById('loginError');
+const adminPanelBtn         = document.getElementById('adminPanelBtn');
+const adminPanel            = document.getElementById('adminPanel');
+const closeAdminPanel       = document.getElementById('closeAdminPanel');
+const adminUserList         = document.getElementById('adminUserList');
+const adminChannelList      = document.getElementById('adminChannelList');
+const addChannelBtn         = document.getElementById('addChannelBtn');
+const newChannelName        = document.getElementById('newChannelName');
+const newChannelType        = document.getElementById('newChannelType');
+const clearCacheBtn         = document.getElementById('clearCacheBtn');
+const selfAvatar            = document.getElementById('selfAvatar');
+const selfName              = document.getElementById('selfName');
+const selfStatus            = document.getElementById('selfStatus');
+const toastContainer        = document.getElementById('toastContainer');
+const contextMenu           = document.getElementById('contextMenu');
 
-// Authentication
-loginBtn.addEventListener('click', () => {
-  const username = usernameInput.value;
-  const password = passwordInput.value;
-  socket.emit('authenticate', { username, password });
+// ─── TOAST SYSTEM ────────────────────────────────────────
+function showToast(message, icon = 'ℹ️', duration = 3500) {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.innerHTML = `<span class="toast-icon">${icon}</span><span class="toast-msg">${message}</span>`;
+  toastContainer.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('toast-exit');
+    toast.addEventListener('animationend', () => toast.remove(), { once: true });
+  }, duration);
+}
+
+// ─── AUTO-RESIZE TEXTAREA ────────────────────────────────
+textInput.addEventListener('input', () => {
+  textInput.style.height = 'auto';
+  textInput.style.height = Math.min(textInput.scrollHeight, 120) + 'px';
+  sendBtn.disabled = !textInput.value.trim();
 });
 
-socket.on('auth-result', ({ success }) => {
-  if (success) {
-    loginOverlay.style.display = 'none';
-    myName = usernameInput.value;
-    console.log(`[DEBUG] Login success. Username updated to: ${myName}`);
-  } else {
-    loginError.style.display = 'block';
+// ─── SEND LOGIC ──────────────────────────────────────────
+function sendMessage() {
+  const text = textInput.value.trim();
+  if (!text || !currentTextChannelId) return;
+  socket.emit('send-text-msg', {
+    serverId: currentServerId,
+    channelId: currentTextChannelId,
+    text,
+    userName: myName,
+    role: myRole
+  });
+  textInput.value = '';
+  textInput.style.height = 'auto';
+  sendBtn.disabled = true;
+}
+
+sendBtn.disabled = true;
+sendBtn.addEventListener('click', sendMessage);
+
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
   }
 });
 
-// Ensure browser media element streams pick up interactions for autoplay permissions
-document.body.addEventListener('click', () => {
-  document.querySelectorAll('video').forEach(video => {
-    if (video.srcObject && video.id !== 'video-box-local') {
-      video.play().catch(() => { });
+// ─── LOGIN ───────────────────────────────────────────────
+loginBtn.addEventListener('click', () => {
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
+  if (!username) return;
+  socket.emit('authenticate', { username, password });
+});
+
+// Allow Enter key in login fields
+[usernameInput, passwordInput].forEach(el => {
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') loginBtn.click(); });
+});
+
+socket.on('auth-result', ({ success, role }) => {
+  if (success) {
+    loginOverlay.style.display = 'none';
+    myName = usernameInput.value.trim();
+    myRole = role || 'member';
+    // Update user panel
+    selfAvatar.textContent = myName.charAt(0).toUpperCase();
+    selfName.textContent = myName;
+    // Show admin button if elevated
+    if (myRole === 'admin' || myRole === 'owner') {
+      adminPanelBtn.style.display = 'flex';
     }
+    showToast(`Welcome back, ${myName}!`, '🐒');
+    console.log(`[Auth] Logged in as ${myName} (${myRole})`);
+  } else {
+    loginError.style.display = 'block';
+    passwordInput.value = '';
+    passwordInput.focus();
+  }
+});
+
+// ─── AUTOPLAY UNBLOCK ────────────────────────────────────
+document.body.addEventListener('click', () => {
+  document.querySelectorAll('video').forEach(v => {
+    if (v.srcObject && v.id !== 'video-box-local') v.play().catch(() => {});
   });
 }, { once: false });
 
-// --- 1. POPULATE DISCORD STRUCTURE ---
+// ─── MESSAGE CACHE (localStorage) ───────────────────────
+function getCacheKey(serverId, channelId) {
+  return `${MSG_CACHE_KEY}:${serverId}:${channelId}`;
+}
+
+function loadCachedMessages(serverId, channelId) {
+  try {
+    const raw = localStorage.getItem(getCacheKey(serverId, channelId));
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function cacheMessage(serverId, channelId, msgObj) {
+  try {
+    const key = getCacheKey(serverId, channelId);
+    const msgs = loadCachedMessages(serverId, channelId);
+    msgs.push(msgObj);
+    if (msgs.length > MAX_CACHED_MSGS) msgs.splice(0, msgs.length - MAX_CACHED_MSGS);
+    localStorage.setItem(key, JSON.stringify(msgs));
+  } catch (e) { console.warn('Cache write failed:', e); }
+}
+
+function clearChannelCache(serverId, channelId) {
+  localStorage.removeItem(getCacheKey(serverId, channelId));
+}
+
+function clearAllCache() {
+  const keys = Object.keys(localStorage).filter(k => k.startsWith(MSG_CACHE_KEY));
+  keys.forEach(k => localStorage.removeItem(k));
+  showToast('Message cache cleared', '🗑️');
+}
+
+// ─── MESSAGE RENDERING ───────────────────────────────────
+function formatTimestamp(ts) {
+  const d = new Date(ts);
+  const h = d.getHours().toString().padStart(2, '0');
+  const m = d.getMinutes().toString().padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+function linkify(text) {
+  // Convert URLs to clickable links, escape HTML first
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return escaped.replace(
+    /(https?:\/\/[^\s]+)/g,
+    '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
+  );
+}
+
+function appendMessage({ userName, text, role, timestamp }) {
+  const ts = timestamp || Date.now();
+  const isAdmin = role === 'admin' || role === 'owner';
+  const isSelf = userName === myName;
+
+  // Check if we should group with the previous message
+  const sameAuthor = lastMsgAuthor === userName;
+  const withinWindow = lastMsgTime && (ts - lastMsgTime) < MSG_GROUP_THRESHOLD;
+  const shouldGroup = sameAuthor && withinWindow;
+
+  if (!shouldGroup) {
+    // New group → header + fresh body
+    const group = document.createElement('div');
+    group.className = 'msg-group';
+
+    const header = document.createElement('div');
+    header.className = 'msg-group-header';
+
+    const authorEl = document.createElement('span');
+    authorEl.className = 'msg-author' + (isAdmin ? ' is-admin' : '');
+    authorEl.textContent = userName + (isSelf ? ' (you)' : '');
+
+    const tsEl = document.createElement('span');
+    tsEl.className = 'msg-timestamp';
+    tsEl.textContent = formatTimestamp(ts);
+
+    header.appendChild(authorEl);
+    header.appendChild(tsEl);
+
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    body.innerHTML = linkify(text);
+    body.dataset.group = 'root';
+
+    group.appendChild(header);
+    group.appendChild(body);
+    msgFeed.appendChild(group);
+  } else {
+    // Append another line to the last group
+    const lastGroup = msgFeed.querySelector('.msg-group:last-child');
+    if (lastGroup) {
+      const body = document.createElement('div');
+      body.className = 'msg-body';
+      body.innerHTML = linkify(text);
+      lastGroup.appendChild(body);
+    }
+  }
+
+  lastMsgAuthor = userName;
+  lastMsgTime = ts;
+
+  msgFeed.scrollTop = msgFeed.scrollHeight;
+}
+
+function appendSystemMessage(text) {
+  const el = document.createElement('div');
+  el.className = 'msg-system';
+  el.textContent = text;
+  msgFeed.appendChild(el);
+  // Reset grouping so next real message starts a new header
+  lastMsgAuthor = null;
+  lastMsgTime = null;
+}
+
+// ─── INIT SERVER DATA ────────────────────────────────────
 socket.on('init-discord-data', ({ servers }) => {
   activeServers = servers;
-  guildsBar.innerHTML = '';
+  // Clear guild icons except home
+  const existingIcons = guildsBar.querySelectorAll('.guild-icon:not(#homeGuildIcon)');
+  existingIcons.forEach(e => e.remove());
+  const divider = guildsBar.querySelector('.guild-divider');
 
   Object.keys(servers).forEach((id, idx) => {
     const btn = document.createElement('div');
     btn.classList.add('guild-icon');
     if (idx === 0) btn.classList.add('active');
-    btn.innerText = servers[id].name.substring(0, 2);
+    btn.textContent = servers[id].name.replace(/\s*[\u{1F300}-\u{1FFFF}]/gu, '').trim().substring(0, 2).toUpperCase();
     btn.title = servers[id].name;
-    btn.onclick = () => switchServer(id, btn);
-    guildsBar.appendChild(btn);
+    btn.dataset.serverId = id;
+    btn.addEventListener('click', () => switchServer(id, btn));
+    // Insert after divider
+    divider ? guildsBar.insertBefore(btn, divider.nextSibling) : guildsBar.appendChild(btn);
   });
 
-  // Default to first server
   switchServer(Object.keys(servers)[0]);
 });
 
+// Server created dynamically (admin action)
+socket.on('server-created', ({ serverId, server }) => {
+  activeServers[serverId] = server;
+  showToast(`Server "${server.name}" created`, '🌳');
+  socket.emit('init-discord-data-request'); // re-fetch if supported, else handle locally
+});
+
+// ─── SWITCH SERVER ───────────────────────────────────────
 function switchServer(serverId, element = null) {
   currentServerId = serverId;
   const server = activeServers[serverId];
-  currentServerName.innerText = server.name;
+  if (!server) return;
+  currentServerName.textContent = server.name;
 
-  if (element) {
-    document.querySelectorAll('.guild-icon').forEach(e => e.classList.remove('active'));
-    element.classList.add('active');
+  document.querySelectorAll('.guild-icon').forEach(e => e.classList.remove('active'));
+  if (element) element.classList.add('active');
+  else {
+    const btn = guildsBar.querySelector(`[data-server-id="${serverId}"]`);
+    if (btn) btn.classList.add('active');
   }
 
-  renderChannels(server);
+  renderChannels(server, serverId);
 }
 
-function renderChannels(server) {
+// ─── RENDER CHANNELS ─────────────────────────────────────
+function renderChannels(server, serverId) {
   channelListContainer.innerHTML = '';
 
-  // Render Text Channels
+  // Text channels
   const tcHead = document.createElement('div');
-  tcHead.classList.add('ch-category');
-  tcHead.innerText = "Text Channels";
+  tcHead.className = 'ch-category';
+  tcHead.innerHTML = `<span>Text Channels</span>${myRole !== 'member' ? '<span class="add-ch-btn" data-type="text" title="Add text channel">＋</span>' : ''}`;
   channelListContainer.appendChild(tcHead);
 
-  Object.keys(server.textChannels).forEach(id => {
+  tcHead.querySelector('.add-ch-btn')?.addEventListener('click', () => openAdminPanel());
+
+  Object.keys(server.textChannels || {}).forEach(id => {
     const el = document.createElement('div');
-    el.classList.add('channel-item');
-    el.innerText = "💬 " + id;
-    el.onclick = () => joinTextChannel(id);
+    el.className = 'channel-item';
+    el.id = `ch-item-${id}`;
+    el.innerHTML = `<span class="ch-icon">💬</span><span>${id}</span><span class="unread-dot"></span>`;
+    el.addEventListener('click', () => joinTextChannel(id));
     channelListContainer.appendChild(el);
   });
 
-  // Render Voice Channels
+  // Voice channels
   const vcHead = document.createElement('div');
-  vcHead.classList.add('ch-category');
-  vcHead.innerText = "Voice Channels";
+  vcHead.className = 'ch-category';
+  vcHead.innerHTML = `<span>Voice Channels</span>${myRole !== 'member' ? '<span class="add-ch-btn" data-type="voice" title="Add voice channel">＋</span>' : ''}`;
   channelListContainer.appendChild(vcHead);
 
-  Object.keys(server.voiceChannels).forEach(id => {
+  vcHead.querySelector('.add-ch-btn')?.addEventListener('click', () => openAdminPanel());
+
+  Object.keys(server.voiceChannels || {}).forEach(id => {
     const el = document.createElement('div');
-    el.classList.add('channel-item');
+    el.className = 'channel-item';
     el.id = `vc-item-${id}`;
-    el.innerText = "🔊 " + server.voiceChannels[id];
-    el.onclick = () => joinVoiceChannel(id);
+    el.innerHTML = `<span class="ch-icon">🔊</span><span>${server.voiceChannels[id]}</span><span class="user-count">0</span>`;
+    el.addEventListener('click', () => joinVoiceChannel(id));
     channelListContainer.appendChild(el);
   });
 
   // Auto-join first text channel
-  joinTextChannel(Object.keys(server.textChannels)[0]);
+  const firstText = Object.keys(server.textChannels || {})[0];
+  if (firstText) joinTextChannel(firstText);
 }
 
-// --- 2. TEXT CHAT SYSTEM ---
+// ─── TEXT CHANNEL ────────────────────────────────────────
 function joinTextChannel(channelId) {
+  // Mark previous as not active
+  if (currentTextChannelId) {
+    document.getElementById(`ch-item-${currentTextChannelId}`)?.classList.remove('active');
+  }
+
   currentTextChannelId = channelId;
-  activeChannelHeader.innerText = `# ${channelId}`;
+  headerIcon.textContent = '💬';
+  activeChannelHeader.textContent = channelId;
+  channelTopic.textContent = `#${channelId} — ${currentServerName.textContent}`;
+
+  document.getElementById(`ch-item-${channelId}`)?.classList.add('active');
+  document.getElementById(`ch-item-${channelId}`)?.classList.remove('has-unread');
+
+  // Clear and reload from cache
   msgFeed.innerHTML = '';
+  lastMsgAuthor = null;
+  lastMsgTime = null;
+
+  const cached = loadCachedMessages(currentServerId, channelId);
+  if (cached.length > 0) {
+    appendSystemMessage(`${cached.length} cached message${cached.length > 1 ? 's' : ''} loaded`);
+    cached.forEach(m => appendMessage(m));
+    appendSystemMessage('— live —');
+  } else {
+    appendSystemMessage('no message history — start the conversation');
+  }
+
   socket.emit('join-text', { serverId: currentServerId, channelId });
+  textInput.focus();
 }
 
-textInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && textInput.value.trim()) {
-    socket.emit('send-text-msg', {
-      serverId: currentServerId,
-      channelId: currentTextChannelId,
-      text: textInput.value.trim(),
-      userName: myName
+socket.on('receive-text-msg', (msgData) => {
+  const { userName, text, role, timestamp } = msgData;
+  // Cache it
+  cacheMessage(currentServerId, currentTextChannelId, msgData);
+
+  // Show unread pip if channel not active (shouldn't happen in this flow but future-proof)
+  appendMessage({ userName, text, role, timestamp });
+
+  // Notify if someone else sends a message while focused on another tab
+  if (document.hidden && Notification.permission === 'granted') {
+    new Notification(`monkey.chat — #${currentTextChannelId}`, {
+      body: `${userName}: ${text.substring(0, 80)}`,
+      icon: '/favicon.ico'
     });
-    textInput.value = '';
   }
 });
 
-socket.on('receive-text-msg', ({ userName, text }) => {
-  const line = document.createElement('div');
-  line.classList.add('msg-line');
-  line.innerHTML = `<b>${userName}:</b> ${text}`;
-  msgFeed.appendChild(line);
-  msgFeed.scrollTop = msgFeed.scrollHeight;
+// ─── ONLINE USER TRACKING ────────────────────────────────
+socket.on('user-list-update', (users) => {
+  onlineUsers = {};
+  users.forEach(u => { onlineUsers[u.socketId] = u; });
+  renderAdminUserList();
 });
 
-// --- 3. MULTI-USER WEBRTC VOICE/VIDEO LOGIC ---
+// ─── VOICE CHANNEL ───────────────────────────────────────
 async function joinVoiceChannel(channelId) {
   if (currentVoiceChannelId === channelId) return;
 
-  // Clear old visual channel highlights
   document.querySelectorAll('.channel-item').forEach(e => e.classList.remove('active-voice'));
-  const targetedItem = document.getElementById(`vc-item-${channelId}`);
-  if (targetedItem) targetedItem.classList.add('active-voice');
+  const vcItem = document.getElementById(`vc-item-${channelId}`);
+  if (vcItem) vcItem.classList.add('active-voice');
 
-  cleanUpVoice();
+  cleanUpVoice(false);
   currentVoiceChannelId = channelId;
+  headerIcon.textContent = '🔊';
+  activeChannelHeader.textContent = activeServers[currentServerId]?.voiceChannels?.[channelId] || channelId;
+  dockChannelName.textContent = activeServers[currentServerId]?.voiceChannels?.[channelId] || channelId;
+
+  // Show video grid, hide placeholder
+  videoArenaEmpty.style.display = 'none';
+  videoGrid.style.display = 'grid';
   voiceDock.style.display = 'flex';
 
-  // Acquire audio and video hardware tracks
   try {
     localStream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS);
   } catch (err) {
-    console.error("Failed to get media with optimized constraints, trying audio only...", err);
+    console.error('Failed optimized constraints, trying audio-only...', err);
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-    } catch (audioErr) {
-      console.error("Failed to get even audio...", audioErr);
-      alert("Could not access microphone/camera. Please check permissions.");
+      showToast('Camera unavailable — audio only', '🎙️');
+    } catch {
+      showToast('Could not access mic/camera', '❌');
       cleanUpVoice();
       return;
     }
   }
 
   addVideoNode('local', myName, localStream);
-
-  socket.emit('join-voice', {
-    serverId: currentServerId,
-    channelId: currentVoiceChannelId,
-    userName: myName
-  });
+  socket.emit('join-voice', { serverId: currentServerId, channelId, userName: myName });
+  showToast(`Joined ${activeChannelHeader.textContent}`, '🔊');
 }
 
 socket.on('current-room-monkeys', (users) => {
-  console.log(`[DEBUG] Received current-room-monkeys:`, users);
-  // Add a small delay to ensure socket.id is properly set
   setTimeout(() => {
-    users.forEach(user => {
-      console.log(`[DEBUG] Initiating peer connection for existing user:`, user);
-      initiatePeerConnection(user.id, user.name);
-    });
+    users.forEach(user => initiatePeerConnection(user.id, user.name));
   }, 100);
 });
 
 socket.on('peer-joined-voice', ({ id, name }) => {
+  appendSystemMessage(`${name} joined the call`);
   initiatePeerConnection(id, name);
+  showToast(`${name} joined the call`, '🐒');
+  // Update vc user count
+  updateVCUserCount();
 });
 
 async function initiatePeerConnection(peerId, peerName) {
-  if (peerConnections[peerId]) {
-    console.log(`⚠️ Connection to ${peerName} already exists, skipping`);
-    return;
-  }
+  if (peerConnections[peerId]) return;
 
   const pc = new RTCPeerConnection(rtcConfig);
-  const isPolite = socket.id < peerId; // Lexicographic comparison for deterministic politeness
+  const isPolite = socket.id > peerId;
 
   peerConnections[peerId] = {
-    pc,
+    pc, peerName,
     iceBuffer: [],
     makingOffer: false,
     ignoreOffer: false,
     isPolite,
-    isSettingRemoteAnswerPending: false,
-    peerName // Store name for debugging
+    isSettingRemoteAnswerPending: false
   };
 
-  // PRE-CREATE the remote MediaStream to avoid timing issues
   remoteStreams[peerId] = new MediaStream();
 
-  console.log(`🤝 Initiating with ${peerName} (${peerId}). I am ${isPolite ? 'POLITE' : 'IMPOLITE'}`);
-
-  // CONNECTION STATE MONITORING
-  pc.oniceconnectionstatechange = () => {
-    console.log(`❄️ ICE State with ${peerName}: ${pc.iceConnectionState}`);
-    if (pc.iceConnectionState === 'failed') {
-      console.log(`🔄 Attempting ICE Restart for ${peerName}...`);
-      pc.restartIce();
-    }
+  pc.onicecandidate = ({ candidate }) => {
+    if (candidate) socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate } });
   };
 
   pc.onconnectionstatechange = () => {
-    console.log(`🔗 Connection State with ${peerName}: ${pc.connectionState}`);
-  };
-
-  // ICE CANDIDATES
-  pc.onicecandidate = (e) => {
-    if (e.candidate) {
-      socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate: e.candidate } });
+    console.log(`[WebRTC] ${peerName} connection state: ${pc.connectionState}`);
+    if (pc.connectionState === 'failed') {
+      showToast(`Connection with ${peerName} failed`, '⚠️');
     }
   };
 
-  // TRACK HANDLING - THIS IS CRITICAL
-  pc.ontrack = (e) => {
-    console.log(`🎵 Incoming ${e.track.kind} track from ${peerName} (${peerId}), id: ${e.track.id}`);
-
-    // Add track to the persistent MediaStream for this peer
-    const existingTrack = remoteStreams[peerId].getTracks().find(t => t.id === e.track.id);
-    if (!existingTrack) {
-      remoteStreams[peerId].addTrack(e.track);
-      console.log(`✅ Added ${e.track.kind} track to ${peerName}'s stream. Total tracks: ${remoteStreams[peerId].getTracks().length}`);
-    }
-
-    // Handle track ending (camera off, etc)
-    e.track.onended = () => {
-      console.log(`🛑 Track ${e.track.kind} ended from ${peerName}`);
-      remoteStreams[peerId].removeTrack(e.track);
-    };
-
-    // Update/create video element with the stream
+  pc.ontrack = (event) => {
+    event.streams[0]?.getTracks().forEach(track => remoteStreams[peerId].addTrack(track));
     addVideoNode(peerId, peerName, remoteStreams[peerId]);
   };
 
-  // PERFECT NEGOTIATION PATTERN - CRITICAL FIXES
   let negotiationInProgress = false;
-
   pc.onnegotiationneeded = async () => {
-    // Prevent overlapping negotiations
-    if (negotiationInProgress) {
-      console.log(`⏳ Negotiation already in progress for ${peerName}, queuing...`);
-      return;
-    }
-
+    if (negotiationInProgress) return;
     try {
       negotiationInProgress = true;
       peerConnections[peerId].makingOffer = true;
-
-      console.log(`📤 Creating offer for ${peerName}...`);
       await pc.setLocalDescription();
-
-      // Apply bitrate limits to the outgoing video sender
       applyBitrateLimits(pc);
-
       socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { sdp: pc.localDescription } });
-      console.log(`📤 Sent ${pc.localDescription.type} to ${peerName}`);
     } catch (err) {
-      console.error(`❌ Negotiation error for ${peerName}:`, err);
+      console.error(`Negotiation error for ${peerName}:`, err);
     } finally {
       peerConnections[peerId].makingOffer = false;
       negotiationInProgress = false;
     }
   };
 
-  // ADD LOCAL TRACKS - This triggers negotiationneeded
   if (localStream) {
-    localStream.getTracks().forEach(track => {
-      const sender = pc.addTrack(track, localStream);
-      console.log(`📤 Added local ${track.kind} track to connection with ${peerName}`);
-    });
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
   }
 }
 
 function applyBitrateLimits(pc) {
   pc.getSenders().forEach(sender => {
-    if (sender.track && sender.track.kind === 'video') {
-      const parameters = sender.getParameters();
-      if (!parameters.encodings) parameters.encodings = [{}];
-      parameters.encodings[0].maxBitrate = MAX_VIDEO_BITRATE;
-      sender.setParameters(parameters).then(() => {
-        console.log(`📉 Bitrate limited to ${MAX_VIDEO_BITRATE / 1000}kbps`);
-      }).catch(e => console.error("Could not apply bitrate limits", e));
+    if (sender.track?.kind === 'video') {
+      const params = sender.getParameters();
+      if (!params.encodings) params.encodings = [{}];
+      params.encodings[0].maxBitrate = MAX_VIDEO_BITRATE;
+      sender.setParameters(params).catch(e => console.error('Bitrate limit failed:', e));
     }
   });
 }
 
 socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
-  console.log(`[DEBUG] Received signal from ${senderPeerId}:`, signal);
   const conn = peerConnections[senderPeerId];
-  if (!conn) {
-    console.warn(`[DEBUG] Received signal from unknown peer ${senderPeerId}`);
-    return;
-  }
-// ...
+  if (!conn) return;
 
   const pc = conn.pc;
   const peerName = conn.peerName || senderPeerId;
@@ -370,173 +548,347 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
   try {
     if (signal.sdp) {
       const offerCollision = signal.sdp.type === 'offer' && (conn.makingOffer || pc.signalingState !== 'stable');
-
       conn.ignoreOffer = !conn.isPolite && offerCollision;
+      if (conn.ignoreOffer) return;
 
-      if (conn.ignoreOffer) {
-        console.log(`⚠️ Collision detected. Impolite peer ignoring offer from ${peerName}`);
-        return;
-      }
-
-      // CRITICAL: Set flag to prevent race condition with answers
       conn.isSettingRemoteAnswerPending = signal.sdp.type === 'answer';
-
-      console.log(`📥 Received ${signal.sdp.type} from ${peerName}`);
       await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-      console.log(`✅ Set remote ${signal.sdp.type} from ${peerName}`);
-
       conn.isSettingRemoteAnswerPending = false;
 
-      // FLUSH ICE CANDIDATE BUFFER
-      if (conn.iceBuffer.length > 0) {
-        console.log(`🧊 Flushing ${conn.iceBuffer.length} buffered ICE candidates for ${peerName}`);
-        for (const candidate of conn.iceBuffer) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          } catch (e) {
-            console.error(`Failed to add buffered candidate for ${peerName}:`, e);
-          }
-        }
-        conn.iceBuffer = [];
+      // Flush ICE buffer
+      for (const candidate of conn.iceBuffer) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
       }
+      conn.iceBuffer = [];
 
-      // If we received an offer, create and send answer
       if (signal.sdp.type === 'offer') {
         await pc.setLocalDescription();
         applyBitrateLimits(pc);
         socket.emit('webrtc-signal', { targetPeerId: senderPeerId, signal: { sdp: pc.localDescription } });
-        console.log(`📤 Sent answer to ${peerName}`);
       }
     } else if (signal.candidate) {
-      try {
-        // Only add candidate if we have a remote description
-        if (pc.remoteDescription && pc.remoteDescription.type) {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-          console.log(`🧊 Added ICE candidate from ${peerName}`);
-        } else {
-          console.log(`🧊 Buffering ICE candidate from ${peerName} (no remote description yet)`);
-          conn.iceBuffer.push(signal.candidate);
-        }
-      } catch (err) {
-        if (!conn.ignoreOffer) {
-          console.error(`❌ ICE candidate error for ${peerName}:`, err);
-        }
+      if (pc.remoteDescription?.type) {
+        await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+      } else {
+        conn.iceBuffer.push(signal.candidate);
       }
     }
   } catch (err) {
-    console.error(`❌ Signaling error for ${peerName}:`, err);
+    console.error(`Signaling error for ${peerName}:`, err);
   }
 });
 
 socket.on('peer-left-voice', (peerId) => {
-  console.log(`👋 Peer left: ${peerId}`);
+  const name = peerConnections[peerId]?.peerName || peerId;
+  appendSystemMessage(`${name} left the call`);
+  showToast(`${name} left the call`, '👋');
 
-  if (peerConnections[peerId]) {
-    peerConnections[peerId].pc.close();
-    delete peerConnections[peerId];
-  }
-  if (remoteStreams[peerId]) {
-    remoteStreams[peerId].getTracks().forEach(track => track.stop());
-    delete remoteStreams[peerId];
-  }
-  const node = document.getElementById(`video-box-${peerId}`);
-  if (node) node.remove();
+  peerConnections[peerId]?.pc.close();
+  delete peerConnections[peerId];
+  remoteStreams[peerId]?.getTracks().forEach(t => t.stop());
+  delete remoteStreams[peerId];
+  document.getElementById(`video-box-${peerId}`)?.remove();
+  updateVCUserCount();
 });
 
-// FIXED: Video/Audio Node Insertion with proper stream handling
+// ─── VIDEO NODES ─────────────────────────────────────────
 function addVideoNode(id, labelName, stream) {
   let box = document.getElementById(`video-box-${id}`);
-
-  // Create the box if it doesn't exist
   if (!box) {
     box = document.createElement('div');
-    box.classList.add('video-box');
+    box.className = 'video-box';
     box.id = `video-box-${id}`;
 
     const video = document.createElement('video');
     video.autoplay = true;
     video.playsInline = true;
 
+    const placeholder = document.createElement('div');
+    placeholder.className = 'no-video-placeholder';
+    placeholder.textContent = labelName.charAt(0).toUpperCase();
+
     const tag = document.createElement('div');
-    tag.classList.add('user-tag');
-    tag.innerText = labelName;
+    tag.className = 'user-tag';
+    tag.innerHTML = `<span>${labelName}</span><span class="mic-status">🎙️</span>`;
 
     box.appendChild(video);
+    box.appendChild(placeholder);
     box.appendChild(tag);
+
+    // Admin badge
+    const userData = Object.values(onlineUsers).find(u => u.name === labelName);
+    if (userData?.role === 'admin' || userData?.role === 'owner') {
+      const badge = document.createElement('div');
+      badge.className = 'admin-badge';
+      badge.textContent = userData.role;
+      box.appendChild(badge);
+    }
+
+    // Context menu on right-click (admin only)
+    if (id !== 'local' && (myRole === 'admin' || myRole === 'owner')) {
+      box.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        showContextMenu(e.clientX, e.clientY, { peerId: id, peerName: labelName });
+      });
+    }
+
     videoGrid.appendChild(box);
   }
 
   const videoEl = box.querySelector('video');
+  const hasVideo = stream.getVideoTracks().some(t => t.enabled && t.readyState === 'live');
 
-  // CRITICAL: Only assign srcObject if it's actually different
   if (videoEl.srcObject !== stream) {
-    console.log(`📺 Assigning stream to video element for ${labelName}. Tracks: ${stream.getTracks().length} (${stream.getAudioTracks().length} audio, ${stream.getVideoTracks().length} video)`);
     videoEl.srcObject = stream;
-
-    // CRITICAL: Set audio properties AFTER assignment
     videoEl.muted = (id === 'local');
     videoEl.volume = 1.0;
-
-    // Force play for remote streams
-    if (id !== 'local') {
-      videoEl.play().catch(err => {
-        console.log(`🔇 ${labelName} waiting for user interaction to play:`, err.message);
-      });
-    }
+    if (id !== 'local') videoEl.play().catch(() => {});
   }
 
-  // Verify tracks are active
-  const hasActiveAudio = stream.getAudioTracks().some(t => t.enabled && t.readyState === 'live');
-  const hasActiveVideo = stream.getVideoTracks().some(t => t.enabled && t.readyState === 'live');
+  // Show/hide video vs placeholder
+  const placeholder = box.querySelector('.no-video-placeholder');
+  videoEl.style.display = hasVideo ? 'block' : 'none';
+  placeholder.style.display = hasVideo ? 'none' : 'flex';
+}
 
-  if (id !== 'local') {
-    console.log(`🔍 ${labelName} track status: Audio ${hasActiveAudio ? '✅' : '❌'}, Video ${hasActiveVideo ? '✅' : '❌'}`);
+function updateVCUserCount() {
+  const count = Object.keys(peerConnections).length + 1; // +1 for self
+  const vcItem = document.getElementById(`vc-item-${currentVoiceChannelId}`);
+  if (vcItem) {
+    vcItem.classList.add('vc-active');
+    const countEl = vcItem.querySelector('.user-count');
+    if (countEl) countEl.textContent = count;
   }
 }
 
-function cleanUpVoice() {
+function cleanUpVoice(resetUI = true) {
   socket.emit('leave-voice');
-
-  Object.keys(peerConnections).forEach(id => {
-    peerConnections[id].pc.close();
-  });
+  Object.values(peerConnections).forEach(({ pc }) => pc.close());
   peerConnections = {};
-
-  Object.keys(remoteStreams).forEach(id => {
-    remoteStreams[id].getTracks().forEach(track => track.stop());
-  });
+  Object.values(remoteStreams).forEach(s => s.getTracks().forEach(t => t.stop()));
   remoteStreams = {};
+  localStream?.getTracks().forEach(t => t.stop());
+  localStream = null;
 
-  if (localStream) {
-    localStream.getTracks().forEach(track => track.stop());
-    localStream = null;
+  if (resetUI) {
+    videoGrid.innerHTML = '';
+    videoGrid.style.display = 'none';
+    videoArenaEmpty.style.display = 'flex';
+    voiceDock.style.display = 'none';
+    document.querySelectorAll('.channel-item').forEach(e => {
+      e.classList.remove('active-voice');
+      e.classList.remove('vc-active');
+    });
+    currentVoiceChannelId = null;
   }
-  videoGrid.innerHTML = '';
-  voiceDock.style.display = 'none';
 }
 
-document.getElementById('disconnectVoice').onclick = () => {
-  cleanUpVoice();
-  document.querySelectorAll('.channel-item').forEach(e => e.classList.remove('active-voice'));
-};
+// ─── DOCK CONTROLS ───────────────────────────────────────
+document.getElementById('disconnectVoice').addEventListener('click', () => {
+  cleanUpVoice(true);
+  showToast('Left voice channel', '📵');
+});
 
-// Toggle Controls
-document.getElementById('toggleMic').onclick = () => {
-  if (localStream) {
-    const audioTrack = localStream.getAudioTracks()[0];
-    if (audioTrack) {
-      audioTrack.enabled = !audioTrack.enabled;
-      document.getElementById('toggleMic').classList.toggle('active', !audioTrack.enabled);
-    }
-  }
-};
+document.getElementById('toggleMic').addEventListener('click', () => {
+  if (!localStream) return;
+  const track = localStream.getAudioTracks()[0];
+  if (!track) return;
+  track.enabled = !track.enabled;
+  const btn = document.getElementById('toggleMic');
+  btn.classList.toggle('muted', !track.enabled);
+  btn.textContent = track.enabled ? '🎙️' : '🔇';
+  selfStatus.textContent = track.enabled ? '● online' : '● muted';
+  selfStatus.className = 'user-panel-status' + (track.enabled ? '' : ' muted');
+  // Update local video tag mic indicator
+  const localTag = document.querySelector('#video-box-local .mic-status');
+  if (localTag) localTag.textContent = track.enabled ? '🎙️' : '🔇';
+});
 
-document.getElementById('toggleVid').onclick = () => {
-  if (localStream) {
-    const videoTrack = localStream.getVideoTracks()[0];
-    if (videoTrack) {
-      videoTrack.enabled = !videoTrack.enabled;
-      document.getElementById('toggleVid').classList.toggle('active', !videoTrack.enabled);
-    }
+document.getElementById('toggleVid').addEventListener('click', () => {
+  if (!localStream) return;
+  const track = localStream.getVideoTracks()[0];
+  if (!track) return;
+  track.enabled = !track.enabled;
+  const btn = document.getElementById('toggleVid');
+  btn.classList.toggle('muted', !track.enabled);
+  btn.textContent = track.enabled ? '📹' : '🚫';
+  // Refresh placeholder visibility
+  const box = document.getElementById('video-box-local');
+  if (box) {
+    box.querySelector('video').style.display = track.enabled ? 'block' : 'none';
+    box.querySelector('.no-video-placeholder').style.display = track.enabled ? 'none' : 'flex';
   }
-};
+});
+
+// ─── INIT SERVER LIST POPULATE ───────────────────────────
+function buildServerUI(servers) {
+  activeServers = servers;
+  const existingIcons = guildsBar.querySelectorAll('.guild-icon:not(#homeGuildIcon)');
+  existingIcons.forEach(e => e.remove());
+
+  Object.keys(servers).forEach((id, idx) => {
+    const btn = document.createElement('div');
+    btn.className = 'guild-icon' + (idx === 0 ? ' active' : '');
+    btn.textContent = servers[id].name.replace(/\s*[\u{1F300}-\u{1FFFF}]/gu, '').trim().substring(0, 2).toUpperCase();
+    btn.title = servers[id].name;
+    btn.dataset.serverId = id;
+    btn.addEventListener('click', () => switchServer(id, btn));
+    guildsBar.appendChild(btn);
+  });
+
+  switchServer(Object.keys(servers)[0]);
+}
+
+// ─── ADMIN PANEL ─────────────────────────────────────────
+adminPanelBtn.addEventListener('click', openAdminPanel);
+closeAdminPanel.addEventListener('click', () => adminPanel.classList.remove('open'));
+adminPanel.addEventListener('click', (e) => { if (e.target === adminPanel) adminPanel.classList.remove('open'); });
+
+function openAdminPanel() {
+  adminPanel.classList.add('open');
+  renderAdminUserList();
+  renderAdminChannelList();
+}
+
+function renderAdminUserList() {
+  adminUserList.innerHTML = '';
+  const users = Object.values(onlineUsers);
+  if (users.length === 0) {
+    adminUserList.innerHTML = '<div style="color: var(--text-3); font-size: 0.8rem; font-family: \'JetBrains Mono\', monospace;">No users online</div>';
+    return;
+  }
+  users.forEach(user => {
+    const row = document.createElement('div');
+    row.className = 'admin-user-row';
+    const canKick = (myRole === 'owner' || (myRole === 'admin' && user.role === 'member')) && user.name !== myName;
+    row.innerHTML = `
+      <div class="admin-user-avatar">${user.name.charAt(0).toUpperCase()}</div>
+      <span class="admin-user-name">${user.name}</span>
+      <span class="admin-user-role ${user.role}">${user.role}</span>
+      <div class="admin-actions">
+        ${canKick ? `<button class="admin-action-btn danger kick-btn" data-id="${user.socketId}">Kick</button>` : ''}
+        ${myRole === 'owner' && user.role !== 'owner' && user.name !== myName
+          ? `<button class="admin-action-btn promote-btn" data-id="${user.socketId}">Promote</button>` : ''}
+      </div>
+    `;
+    row.querySelector('.kick-btn')?.addEventListener('click', () => {
+      socket.emit('admin-kick', { targetSocketId: user.socketId });
+      showToast(`Kicked ${user.name}`, '🚫');
+    });
+    row.querySelector('.promote-btn')?.addEventListener('click', () => {
+      socket.emit('admin-promote', { targetSocketId: user.socketId });
+      showToast(`Promoted ${user.name} to admin`, '⬆️');
+    });
+    adminUserList.appendChild(row);
+  });
+}
+
+function renderAdminChannelList() {
+  adminChannelList.innerHTML = '';
+  const server = activeServers[currentServerId];
+  if (!server) return;
+
+  const allChannels = [
+    ...Object.keys(server.textChannels || {}).map(id => ({ id, type: 'text', name: id })),
+    ...Object.keys(server.voiceChannels || {}).map(id => ({ id, type: 'voice', name: server.voiceChannels[id] }))
+  ];
+
+  allChannels.forEach(ch => {
+    const row = document.createElement('div');
+    row.className = 'admin-channel-row';
+    row.innerHTML = `
+      <span class="ch-icon">${ch.type === 'text' ? '💬' : '🔊'}</span>
+      <span class="admin-channel-name">${ch.name}</span>
+      <span class="admin-channel-type">${ch.type}</span>
+      <div class="admin-actions">
+        ${myRole === 'owner' ? `<button class="admin-action-btn danger delete-ch-btn" data-id="${ch.id}" data-type="${ch.type}">Delete</button>` : ''}
+      </div>
+    `;
+    row.querySelector('.delete-ch-btn')?.addEventListener('click', () => {
+      socket.emit('admin-delete-channel', { serverId: currentServerId, channelId: ch.id, channelType: ch.type });
+      showToast(`Deleted #${ch.name}`, '🗑️');
+      adminPanel.classList.remove('open');
+    });
+    adminChannelList.appendChild(row);
+  });
+}
+
+addChannelBtn.addEventListener('click', () => {
+  const name = newChannelName.value.trim().toLowerCase().replace(/\s+/g, '-');
+  const type = newChannelType.value;
+  if (!name) return;
+  socket.emit('admin-add-channel', { serverId: currentServerId, channelName: name, channelType: type });
+  newChannelName.value = '';
+  showToast(`Added ${type} channel #${name}`, '✅');
+});
+
+clearCacheBtn.addEventListener('click', clearAllCache);
+
+// Server responds to admin actions
+socket.on('channels-updated', ({ serverId, server }) => {
+  activeServers[serverId] = server;
+  if (serverId === currentServerId) renderChannels(server, serverId);
+});
+
+socket.on('admin-kicked', () => {
+  showToast('You were kicked from voice by an admin', '🚫');
+  cleanUpVoice(true);
+});
+
+socket.on('role-updated', ({ socketId, newRole }) => {
+  if (onlineUsers[socketId]) onlineUsers[socketId].role = newRole;
+  // If it's us, update our own role
+  if (socketId === socket.id) {
+    myRole = newRole;
+    adminPanelBtn.style.display = (newRole !== 'member') ? 'flex' : 'none';
+    showToast(`Your role updated to: ${newRole}`, '⬆️');
+  }
+  renderAdminUserList();
+});
+
+// ─── CONTEXT MENU ────────────────────────────────────────
+let ctxTarget = null;
+
+function showContextMenu(x, y, target) {
+  ctxTarget = target;
+  contextMenu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
+  contextMenu.style.top = `${Math.min(y, window.innerHeight - 120)}px`;
+  contextMenu.style.display = 'block';
+}
+
+document.addEventListener('click', () => { contextMenu.style.display = 'none'; });
+document.addEventListener('contextmenu', (e) => { if (!e.target.closest('.video-box')) contextMenu.style.display = 'none'; });
+
+document.getElementById('ctxMention').addEventListener('click', () => {
+  if (ctxTarget) {
+    textInput.value = `@${ctxTarget.peerName} `;
+    textInput.focus();
+  }
+});
+
+document.getElementById('ctxKick').addEventListener('click', () => {
+  if (ctxTarget && (myRole === 'admin' || myRole === 'owner')) {
+    socket.emit('admin-kick', { targetSocketId: ctxTarget.peerId });
+    showToast(`Kicked ${ctxTarget.peerName} from voice`, '🚫');
+  }
+});
+
+// ─── BROWSER NOTIFICATIONS ───────────────────────────────
+if ('Notification' in window && Notification.permission === 'default') {
+  Notification.requestPermission();
+}
+
+// ─── DISCONNECT HANDLING ─────────────────────────────────
+socket.on('disconnect', () => {
+  showToast('Disconnected — reconnecting...', '⚡');
+  selfStatus.textContent = '● disconnected';
+  selfStatus.style.color = 'var(--red)';
+});
+
+socket.on('connect', () => {
+  if (myName) {
+    showToast('Reconnected', '✅');
+    selfStatus.textContent = '● online';
+    selfStatus.style.color = '';
+  }
+});
