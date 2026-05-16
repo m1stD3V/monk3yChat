@@ -13,16 +13,15 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Credentials Loader
 const loadCredentials = () => {
-    try {
-        const creds = fs.readFileSync(path.join(__dirname, 'credentials.txt'), 'utf8');
-        return creds.split('\n').filter(line => line.includes(':')).map(line => {
-            const [username, password] = line.split(':');
-            return { username: username.trim(), password: password.trim() };
-        });
-    } catch (err) {
-        console.error("Failed to load credentials.txt:", err);
-        return []; // Return empty array if file missing
+    const authEnv = process.env.AUTH_CREDENTIALS;
+    if (!authEnv) {
+        console.warn("WARNING: AUTH_CREDENTIALS environment variable not set.");
+        return [];
     }
+    return authEnv.split(';').filter(line => line.includes(':')).map(line => {
+        const [username, password] = line.split(':');
+        return { username: username.trim(), password: password.trim() };
+    });
 };
 
 // Mock Discord Server Database Structure
