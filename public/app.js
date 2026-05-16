@@ -16,11 +16,13 @@ const rtcConfig = {
       username: '3668af38c652028b1a39b682',
       credential: 'TdkzU0crNP4oPMm1'
     }
-  ]
+  ],
+  bundlePolicy: 'max-bundle'
 };
 
 let localStream = null;
 let peerConnections = {}; // Format: { [socketId]: RTCPeerConnection }
+let remoteStreams = {};   // Format: { [socketId]: MediaStream }
 let activeServers = {};
 let currentServerId = null;
 let currentTextChannelId = null;
@@ -190,6 +192,11 @@ socket.on('peer-joined-voice', ({ id, name }) => {
 });
 
 async function initiatePeerConnection(peerId, peerName, isCaller) {
+  if (peerConnections[peerId]) {
+    console.log(`⚠️ Connection with ${peerId} already exists, skipping...`);
+    return;
+  }
+
   const pc = new RTCPeerConnection(rtcConfig);
   peerConnections[peerId] = pc;
 
@@ -203,20 +210,17 @@ async function initiatePeerConnection(peerId, peerName, isCaller) {
 
   // Robust multi-track collector for audio & video streams
   pc.ontrack = (e) => {
-    console.log(`🎵 Incoming track from ${peerName}:`, e.track.kind);
-    const remoteStream = e.streams[0];
-
-    // Build the video slot if it's missing from the DOM matrix
-    addVideoNode(peerId, peerName, remoteStream);
-
-    // FAILSAFE: Explicitly inject the full stream object onto the target tag
-    const box = document.getElementById(`video-box-${peerId}`);
-    if (box) {
-      const videoEl = box.querySelector('video');
-      if (videoEl && videoEl.srcObject !== remoteStream) {
-        videoEl.srcObject = remoteStream;
-      }
+    console.log(`🎵 Incoming track from ${peerName} (${peerId}):`, e.track.kind);
+    
+    // Use or create a persistent MediaStream for this specific peer
+    if (!remoteStreams[peerId]) {
+      remoteStreams[peerId] = new MediaStream();
     }
+    
+    remoteStreams[peerId].addTrack(e.track);
+
+    // Build or update the video slot in the DOM matrix
+    addVideoNode(peerId, peerName, remoteStreams[peerId]);
   };
 
   if (isCaller) {
@@ -248,6 +252,9 @@ socket.on('peer-left-voice', (peerId) => {
   if (peerConnections[peerId]) {
     peerConnections[peerId].close();
     delete peerConnections[peerId];
+  }
+  if (remoteStreams[peerId]) {
+    delete remoteStreams[peerId];
   }
   const node = document.getElementById(`video-box-${peerId}`);
   if (node) node.remove();
@@ -304,6 +311,7 @@ function cleanUpVoice() {
     peerConnections[id].close();
   });
   peerConnections = {};
+  remoteStreams = {};
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
