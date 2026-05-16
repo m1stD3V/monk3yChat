@@ -34,6 +34,8 @@ let currentVoiceChannelId = null;
 let myName = '';
 let myRole = 'member'; // 'member' | 'admin' | 'owner'
 let onlineUsers = {};  // socketId → { name, role }
+let pinnedMessages = []; // current channel pins
+let membersSidebarOpen = false;
 let lastMsgAuthor = null;
 let lastMsgTime = null;
 
@@ -70,6 +72,158 @@ const selfName              = document.getElementById('selfName');
 const selfStatus            = document.getElementById('selfStatus');
 const toastContainer        = document.getElementById('toastContainer');
 const contextMenu           = document.getElementById('contextMenu');
+
+// New UI Elements
+const membersBtn            = document.getElementById('membersBtn');
+const membersSidebar        = document.getElementById('membersSidebar');
+const membersList           = document.getElementById('membersList');
+const memberCount           = document.getElementById('memberCount');
+const searchBtn             = document.getElementById('searchBtn');
+const searchContainer       = document.getElementById('searchContainer');
+const searchInput           = document.getElementById('searchInput');
+const searchClose           = document.getElementById('searchClose');
+const pinsBtn               = document.getElementById('pinsBtn');
+const pinsModal             = document.getElementById('pinsModal');
+const pinsList              = document.getElementById('pinsList');
+const selfSettingsBtn       = document.getElementById('selfSettingsBtn');
+const settingsModal         = document.getElementById('settingsModal');
+const settingsUsername      = document.getElementById('settingsUsername');
+const saveSettingsBtn       = document.getElementById('saveSettingsBtn');
+const createServerBtn       = document.getElementById('createServerBtn');
+const createServerModal     = document.getElementById('createServerModal');
+const newServerNameInput    = document.getElementById('newServerName');
+const confirmCreateServerBtn = document.getElementById('confirmCreateServerBtn');
+const ctxPin                = document.getElementById('ctxPin');
+
+// ─── SEARCH LOGIC ─────────────────────────────
+searchBtn.addEventListener('click', () => {
+  searchContainer.classList.toggle('open');
+  if (searchContainer.classList.contains('open')) searchInput.focus();
+  else {
+    searchInput.value = '';
+    handleSearch();
+  }
+});
+
+searchClose.addEventListener('click', () => {
+  searchContainer.classList.remove('open');
+  searchInput.value = '';
+  handleSearch();
+});
+
+searchInput.addEventListener('input', handleSearch);
+
+function handleSearch() {
+  const query = searchInput.value.toLowerCase().trim();
+  const messages = msgFeed.querySelectorAll('.msg-group');
+  
+  messages.forEach(group => {
+    const author = group.querySelector('.msg-author').textContent.toLowerCase();
+    const bodies = group.querySelectorAll('.msg-body');
+    let groupVisible = false;
+    
+    bodies.forEach(body => {
+      const text = body.textContent.toLowerCase();
+      const visible = text.includes(query) || author.includes(query);
+      body.style.display = visible ? 'block' : 'none';
+      if (visible) groupVisible = true;
+    });
+    
+    group.style.display = groupVisible ? 'flex' : 'none';
+  });
+}
+
+// ─── MEMBERS SIDEBAR LOGIC ───────────────────
+membersBtn.addEventListener('click', () => {
+  membersSidebarOpen = !membersSidebarOpen;
+  membersSidebar.classList.toggle('open', membersSidebarOpen);
+  if (membersSidebarOpen) renderMembersList();
+});
+
+function renderMembersList() {
+  membersList.innerHTML = '';
+  const users = Object.values(onlineUsers);
+  memberCount.textContent = users.length;
+
+  users.forEach(user => {
+    const el = document.createElement('div');
+    el.className = 'member-item';
+    el.innerHTML = `
+      <div class="member-avatar">${user.name.charAt(0).toUpperCase()}</div>
+      <div class="member-name online">${user.name}</div>
+      <div class="member-role-icon">${user.role === 'owner' ? '👑' : user.role === 'admin' ? '🛡️' : ''}</div>
+    `;
+    membersList.appendChild(el);
+  });
+}
+
+// ─── PINS LOGIC ─────────────────────────────
+pinsBtn.addEventListener('click', () => {
+  pinsModal.classList.add('open');
+  socket.emit('get-pinned-messages', { serverId: currentServerId, channelId: currentTextChannelId });
+});
+
+socket.on('pinned-messages-update', ({ messages }) => {
+  pinnedMessages = messages;
+  renderPinsList();
+});
+
+function renderPinsList() {
+  pinsList.innerHTML = '';
+  if (pinnedMessages.length === 0) {
+    pinsList.innerHTML = '<div style="color: var(--text-3); font-size: 0.8rem; text-align: center;">No pinned messages yet</div>';
+    return;
+  }
+
+  pinnedMessages.forEach(msg => {
+    const el = document.createElement('div');
+    el.className = 'pin-item';
+    el.innerHTML = `
+      <div class="pin-meta">
+        <strong>${msg.userName}</strong>
+        <span>${formatTimestamp(msg.timestamp)}</span>
+      </div>
+      <div style="font-size: 0.85rem; color: var(--text-2);">${linkify(msg.text)}</div>
+      <button class="admin-action-btn danger" style="margin-top:8px; width:fit-content; padding:2px 8px;" onclick="unpinMessage('${msg.id}')">Unpin</button>
+    `;
+    pinsList.appendChild(el);
+  });
+}
+
+window.unpinMessage = (messageId) => {
+  socket.emit('unpin-message', { serverId: currentServerId, channelId: currentTextChannelId, messageId });
+};
+
+// ─── USER SETTINGS LOGIC ─────────────────────
+selfSettingsBtn.addEventListener('click', () => {
+  settingsUsername.value = myName;
+  settingsModal.classList.add('open');
+});
+
+saveSettingsBtn.addEventListener('click', () => {
+  const newName = settingsUsername.value.trim();
+  if (!newName) return;
+  myName = newName;
+  selfName.textContent = myName;
+  selfAvatar.textContent = myName.charAt(0).toUpperCase();
+  socket.emit('update-user', { newName });
+  settingsModal.classList.remove('open');
+  showToast('Profile updated', '👤');
+});
+
+// ─── CREATE SERVER LOGIC ────────────────────
+createServerBtn.addEventListener('click', () => {
+  createServerModal.classList.add('open');
+});
+
+confirmCreateServerBtn.addEventListener('click', () => {
+  const name = newServerNameInput.value.trim();
+  if (!name) return;
+  socket.emit('create-server', { name });
+  newServerNameInput.value = '';
+  createServerModal.classList.remove('open');
+  showToast(`Creating server "${name}"...`, '🏝️');
+});
 
 // ─── TOAST SYSTEM ────────────────────────────────────────
 function showToast(message, icon = 'ℹ️', duration = 3500) {
@@ -209,7 +363,8 @@ function linkify(text) {
   );
 }
 
-function appendMessage({ userName, text, role, timestamp }) {
+function appendMessage(msgData) {
+  const { id, userName, text, role, timestamp } = msgData;
   const ts = timestamp || Date.now();
   const isAdmin = role === 'admin' || role === 'owner';
   const isSelf = userName === myName;
@@ -218,6 +373,8 @@ function appendMessage({ userName, text, role, timestamp }) {
   const sameAuthor = lastMsgAuthor === userName;
   const withinWindow = lastMsgTime && (ts - lastMsgTime) < MSG_GROUP_THRESHOLD;
   const shouldGroup = sameAuthor && withinWindow;
+
+  let body;
 
   if (!shouldGroup) {
     // New group → header + fresh body
@@ -238,7 +395,7 @@ function appendMessage({ userName, text, role, timestamp }) {
     header.appendChild(authorEl);
     header.appendChild(tsEl);
 
-    const body = document.createElement('div');
+    body = document.createElement('div');
     body.className = 'msg-body';
     body.innerHTML = linkify(text);
     body.dataset.group = 'root';
@@ -250,11 +407,19 @@ function appendMessage({ userName, text, role, timestamp }) {
     // Append another line to the last group
     const lastGroup = msgFeed.querySelector('.msg-group:last-child');
     if (lastGroup) {
-      const body = document.createElement('div');
+      body = document.createElement('div');
       body.className = 'msg-body';
       body.innerHTML = linkify(text);
       lastGroup.appendChild(body);
     }
+  }
+
+  if (body) {
+    body.dataset.msgId = id;
+    body.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showContextMenu(e.clientX, e.clientY, { type: 'message', data: msgData });
+    });
   }
 
   lastMsgAuthor = userName;
@@ -284,7 +449,6 @@ socket.on('init-discord-data', ({ servers }) => {
   Object.keys(servers).forEach((id, idx) => {
     const btn = document.createElement('div');
     btn.classList.add('guild-icon');
-    if (idx === 0) btn.classList.add('active');
     btn.textContent = servers[id].name.replace(/\s*[\u{1F300}-\u{1FFFF}]/gu, '').trim().substring(0, 2).toUpperCase();
     btn.title = servers[id].name;
     btn.dataset.serverId = id;
@@ -293,7 +457,11 @@ socket.on('init-discord-data', ({ servers }) => {
     divider ? guildsBar.insertBefore(btn, divider.nextSibling) : guildsBar.appendChild(btn);
   });
 
-  switchServer(Object.keys(servers)[0]);
+  if (currentServerId && activeServers[currentServerId]) {
+    switchServer(currentServerId);
+  } else {
+    switchServer(Object.keys(servers)[0]);
+  }
 });
 
 // Server created dynamically (admin action)
@@ -305,6 +473,7 @@ socket.on('server-created', ({ serverId, server }) => {
 
 // ─── SWITCH SERVER ───────────────────────────────────────
 function switchServer(serverId, element = null) {
+  const isSameServer = (currentServerId === serverId);
   currentServerId = serverId;
   const server = activeServers[serverId];
   if (!server) return;
@@ -317,11 +486,11 @@ function switchServer(serverId, element = null) {
     if (btn) btn.classList.add('active');
   }
 
-  renderChannels(server, serverId);
+  renderChannels(server, serverId, !isSameServer);
 }
 
 // ─── RENDER CHANNELS ─────────────────────────────────────
-function renderChannels(server, serverId) {
+function renderChannels(server, serverId, autoJoinFirst = true) {
   channelListContainer.innerHTML = '';
 
   // Text channels
@@ -337,6 +506,7 @@ function renderChannels(server, serverId) {
     el.className = 'channel-item';
     el.id = `ch-item-${id}`;
     el.innerHTML = `<span class="ch-icon">💬</span><span>${id}</span><span class="unread-dot"></span>`;
+    if (id === currentTextChannelId) el.classList.add('active');
     el.addEventListener('click', () => joinTextChannel(id));
     channelListContainer.appendChild(el);
   });
@@ -354,13 +524,16 @@ function renderChannels(server, serverId) {
     el.className = 'channel-item';
     el.id = `vc-item-${id}`;
     el.innerHTML = `<span class="ch-icon">🔊</span><span>${server.voiceChannels[id]}</span><span class="user-count">0</span>`;
+    if (id === currentVoiceChannelId) el.classList.add('active-voice');
     el.addEventListener('click', () => joinVoiceChannel(id));
     channelListContainer.appendChild(el);
   });
 
-  // Auto-join first text channel
-  const firstText = Object.keys(server.textChannels || {})[0];
-  if (firstText) joinTextChannel(firstText);
+  // Auto-join first text channel if requested
+  if (autoJoinFirst) {
+    const firstText = Object.keys(server.textChannels || {})[0];
+    if (firstText) joinTextChannel(firstText);
+  }
 }
 
 // ─── TEXT CHANNEL ────────────────────────────────────────
@@ -418,6 +591,7 @@ socket.on('user-list-update', (users) => {
   onlineUsers = {};
   users.forEach(u => { onlineUsers[u.socketId] = u; });
   renderAdminUserList();
+  renderMembersList();
 });
 
 // ─── VOICE CHANNEL ───────────────────────────────────────
@@ -852,22 +1026,43 @@ let ctxTarget = null;
 function showContextMenu(x, y, target) {
   ctxTarget = target;
   contextMenu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
-  contextMenu.style.top = `${Math.min(y, window.innerHeight - 120)}px`;
+  contextMenu.style.top = `${Math.min(y, window.innerHeight - 150)}px`;
   contextMenu.style.display = 'block';
+
+  // Toggle visibility of context menu items based on target type
+  const isMsg = target.type === 'message';
+  ctxPin.style.display = isMsg ? 'flex' : 'none';
+  document.getElementById('ctxKick').style.display = !isMsg ? 'flex' : 'none';
 }
 
 document.addEventListener('click', () => { contextMenu.style.display = 'none'; });
-document.addEventListener('contextmenu', (e) => { if (!e.target.closest('.video-box')) contextMenu.style.display = 'none'; });
+document.addEventListener('contextmenu', (e) => { 
+  if (!e.target.closest('.video-box') && !e.target.closest('.msg-body')) {
+    contextMenu.style.display = 'none'; 
+  }
+});
 
 document.getElementById('ctxMention').addEventListener('click', () => {
   if (ctxTarget) {
-    textInput.value = `@${ctxTarget.peerName} `;
+    const name = ctxTarget.type === 'message' ? ctxTarget.data.userName : ctxTarget.peerName;
+    textInput.value += `@${name} `;
     textInput.focus();
   }
 });
 
+document.getElementById('ctxPin').addEventListener('click', () => {
+  if (ctxTarget && ctxTarget.type === 'message') {
+    socket.emit('pin-message', { 
+      serverId: currentServerId, 
+      channelId: currentTextChannelId, 
+      message: ctxTarget.data 
+    });
+    showToast('Message pinned', '📌');
+  }
+});
+
 document.getElementById('ctxKick').addEventListener('click', () => {
-  if (ctxTarget && (myRole === 'admin' || myRole === 'owner')) {
+  if (ctxTarget && ctxTarget.type !== 'message' && (myRole === 'admin' || myRole === 'owner')) {
     socket.emit('admin-kick', { targetSocketId: ctxTarget.peerId });
     showToast(`Kicked ${ctxTarget.peerName} from voice`, '🚫');
   }

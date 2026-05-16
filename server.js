@@ -51,6 +51,10 @@ const defaultServers = {
 // Runtime-mutable server list (admin actions modify this)
 let jungleServers = JSON.parse(JSON.stringify(defaultServers));
 
+// ─── PINNED MESSAGES (in-memory) ────────────────────────
+// pinnedMessages[serverId][channelId] = [...msgs]
+const pinnedMessages = {};
+
 // ─── MESSAGE CACHE (server-side, in-memory ring buffer) ──
 // Structure: cache[serverId][channelId] = [...msgs]
 const MSG_CACHE_MAX = 100;
@@ -169,6 +173,7 @@ io.on('connection', (socket) => {
     const effectiveRole = userData?.role || role || 'member';
 
     const msgObj = {
+      id: `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       senderId: socket.id,
       userName,
       text: safeText,
@@ -178,6 +183,58 @@ io.on('connection', (socket) => {
 
     cacheMsg(serverId, channelId, msgObj);
     io.to(`tx-${serverId}-${channelId}`).emit('receive-text-msg', msgObj);
+  });
+
+  // ── Pinning
+  socket.on('pin-message', ({ serverId, channelId, message }) => {
+    if (!pinnedMessages[serverId]) pinnedMessages[serverId] = {};
+    if (!pinnedMessages[serverId][channelId]) pinnedMessages[serverId][channelId] = [];
+    
+    // Check if already pinned
+    if (pinnedMessages[serverId][channelId].some(m => m.id === message.id)) return;
+    
+    pinnedMessages[serverId][channelId].push(message);
+    io.to(`tx-${serverId}-${channelId}`).emit('pinned-messages-update', { 
+      serverId, channelId, messages: pinnedMessages[serverId][channelId] 
+    });
+  });
+
+  socket.on('unpin-message', ({ serverId, channelId, messageId }) => {
+    if (pinnedMessages[serverId]?.[channelId]) {
+      pinnedMessages[serverId][channelId] = pinnedMessages[serverId][channelId].filter(m => m.id !== messageId);
+      io.to(`tx-${serverId}-${channelId}`).emit('pinned-messages-update', { 
+        serverId, channelId, messages: pinnedMessages[serverId][channelId] 
+      });
+    }
+  });
+
+  socket.on('get-pinned-messages', ({ serverId, channelId }) => {
+    const pins = pinnedMessages[serverId]?.[channelId] || [];
+    socket.emit('pinned-messages-update', { serverId, channelId, messages: pins });
+  });
+
+  // ── Server Management
+  socket.on('create-server', ({ name }) => {
+    const serverId = name.toLowerCase().replace(/[^a-z0-9]/g, '-').substring(0, 32) + '-' + Math.floor(Math.random() * 1000);
+    const newServer = {
+      name: name + ' 🏝️',
+      textChannels: { general: '💬 general-chat' },
+      voiceChannels: { lounge: '🔊 The Lounge' }
+    };
+    jungleServers[serverId] = newServer;
+    io.emit('server-created', { serverId, server: newServer });
+    // Re-emit init data to everyone to refresh guild bars
+    io.emit('init-discord-data', { servers: jungleServers });
+  });
+
+  // ── User settings
+  socket.on('update-user', ({ newName }) => {
+    if (userRegistry[socket.id]) {
+      const oldName = userRegistry[socket.id].userName;
+      userRegistry[socket.id].userName = newName;
+      broadcastUserList();
+      console.log(`👤 ${oldName} changed name to ${newName}`);
+    }
   });
 
   // ── Leave voice

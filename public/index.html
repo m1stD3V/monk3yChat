@@ -516,22 +516,90 @@
       to   { opacity: 0; transform: translateY(6px); }
     }
 
-    /* ─── CONTEXT MENU ───────────────────────── */
-    #contextMenu {
-      position: fixed; background: var(--bg-2);
-      border: 1px solid var(--border-strong); border-radius: var(--radius-md);
-      padding: 6px; z-index: 2500; display: none; min-width: 160px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    /* ─── MEMBERS SIDEBAR ──────────────────── */
+    .members-sidebar {
+      width: 240px; background: var(--bg-2);
+      border-left: 1px solid var(--border);
+      display: none; flex-direction: column; flex-shrink: 0;
     }
-    .ctx-item {
-      padding: 8px 12px; border-radius: var(--radius-sm);
-      font-size: 0.82rem; cursor: pointer; display: flex; align-items: center;
-      gap: 8px; transition: background 0.12s; color: var(--text-2);
+    .members-sidebar.open { display: flex; }
+    .members-header {
+      padding: 16px; font-size: 0.75rem; font-weight: 700;
+      letter-spacing: 1px; text-transform: uppercase; color: var(--text-3);
+      border-bottom: 1px solid var(--border);
     }
-    .ctx-item:hover { background: var(--bg-4); color: var(--text-1); }
-    .ctx-item.danger { color: var(--red); }
-    .ctx-item.danger:hover { background: rgba(248,113,113,0.1); }
-    .ctx-sep { height: 1px; background: var(--border); margin: 4px 0; }
+    .members-list { flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+    .member-item {
+      display: flex; align-items: center; gap: 10px; padding: 6px 8px;
+      border-radius: var(--radius-sm); cursor: default;
+    }
+    .member-item:hover { background: var(--bg-3); }
+    .member-avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--bg-4); display: flex; align-items: center;
+      justify-content: center; font-weight: 700; font-size: 0.8rem;
+      color: var(--text-2); flex-shrink: 0;
+    }
+    .member-name { font-size: 0.875rem; color: var(--text-2); flex: 1; }
+    .member-name.online { color: var(--text-1); }
+    .member-role-icon { font-size: 0.75rem; }
+
+    /* ─── SEARCH BAR ───────────────────────── */
+    .search-container {
+      background: var(--bg-2); padding: 8px 20px;
+      border-bottom: 1px solid var(--border);
+      display: none; align-items: center; gap: 10px;
+    }
+    .search-container.open { display: flex; }
+    #searchInput {
+      flex: 1; background: var(--bg-1); border: 1px solid var(--border-strong);
+      padding: 6px 12px; border-radius: var(--radius-sm);
+      color: var(--text-1); font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem; outline: none;
+    }
+    .search-close { cursor: pointer; color: var(--text-3); font-size: 1.2rem; }
+
+    /* ─── GENERIC MODAL ────────────────────── */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(5,8,6,0.85); backdrop-filter: blur(12px);
+      z-index: 2100; display: none;
+      align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-content {
+      background: var(--bg-2); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg); width: 440px; max-height: 80vh;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .modal-header {
+      padding: 20px 24px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal-header h2 { font-size: 1rem; font-weight: 800; }
+    .modal-body { padding: 20px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+    .modal-footer {
+      padding: 14px 24px; border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 8px;
+    }
+
+    /* ─── PINS MODAL ───────────────────────── */
+    .pin-item {
+      background: var(--bg-3); border: 1px solid var(--border);
+      padding: 12px; border-radius: var(--radius-md);
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .pin-meta { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-3); }
+
+    /* ─── GUILD ACTION BTN ─────────────────── */
+    .guild-action-btn {
+      width: 44px; height: 44px;
+      background: var(--bg-3); border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.4rem; cursor: pointer; color: var(--green-accent);
+      transition: all 0.18s ease; border: 2px solid transparent;
+    }
+    .guild-action-btn:hover { border-radius: var(--radius-md); background: var(--green-accent); color: var(--bg-0); }
   </style>
 </head>
 <body>
@@ -594,9 +662,59 @@
     </div>
   </div>
 
+  <!-- ── PINS MODAL ─────────────────────────────── -->
+  <div id="pinsModal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Pinned Messages</h2>
+      </div>
+      <div class="modal-body" id="pinsList">
+        <div style="color: var(--text-3); font-size: 0.8rem; text-align: center;">No pinned messages yet</div>
+      </div>
+      <div class="modal-footer">
+        <button class="admin-close-btn" onclick="document.getElementById('pinsModal').classList.remove('open')">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SETTINGS MODAL ──────────────────────────── -->
+  <div id="settingsModal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>User Settings</h2>
+      </div>
+      <div class="modal-body">
+        <label style="font-size: 0.7rem; font-weight: 700; color: var(--text-3); text-transform: uppercase;">Display Name</label>
+        <input type="text" id="settingsUsername" class="login-card input" style="margin-bottom: 0;">
+      </div>
+      <div class="modal-footer">
+        <button class="admin-close-btn" onclick="document.getElementById('settingsModal').classList.remove('open')">Cancel</button>
+        <button id="saveSettingsBtn" style="padding: 9px 20px; background: var(--banana); border: none; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CREATE SERVER MODAL ─────────────────────── -->
+  <div id="createServerModal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Create a Server</h2>
+      </div>
+      <div class="modal-body">
+        <label style="font-size: 0.7rem; font-weight: 700; color: var(--text-3); text-transform: uppercase;">Server Name</label>
+        <input type="text" id="newServerName" class="login-card input" placeholder="Banana Kingdom" style="margin-bottom: 0;">
+      </div>
+      <div class="modal-footer">
+        <button class="admin-close-btn" onclick="document.getElementById('createServerModal').classList.remove('open')">Cancel</button>
+        <button id="confirmCreateServerBtn" style="padding: 9px 20px; background: var(--banana); border: none; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;">Create Server</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── CONTEXT MENU ────────────────────────────── -->
   <div id="contextMenu">
     <div class="ctx-item" id="ctxMention">💬 Mention User</div>
+    <div class="ctx-item" id="ctxPin">📌 Pin Message</div>
     <div class="ctx-sep"></div>
     <div class="ctx-item danger" id="ctxKick">🚫 Kick from Voice</div>
   </div>
@@ -608,6 +726,7 @@
   <nav class="guilds-bar" id="guildsBar">
     <div class="guild-icon active" id="homeGuildIcon" style="font-weight:800; font-size:0.75rem; color:var(--banana); letter-spacing:-0.5px;">M.C</div>
     <div class="guild-divider"></div>
+    <div class="guild-action-btn" id="createServerBtn" title="Create a Server">＋</div>
   </nav>
 
   <!-- ── CHANNELS SIDEBAR ───────────────────────── -->
@@ -638,9 +757,16 @@
       <div class="view-header-sep"></div>
       <span class="view-header-topic" id="channelTopic">Welcome to monkey.chat</span>
       <div class="view-header-actions">
-        <button class="icon-btn" title="Pin Messages">📌</button>
-        <button class="icon-btn" title="Search">🔍</button>
+        <button class="icon-btn" id="pinsBtn" title="Pin Messages">📌</button>
+        <button class="icon-btn" id="searchBtn" title="Search">🔍</button>
       </div>
+    </div>
+
+    <!-- ── SEARCH CONTAINER ─────────────────────── -->
+    <div class="search-container" id="searchContainer">
+      <span style="font-size: 0.8rem; color: var(--text-3);">🔍</span>
+      <input type="text" id="searchInput" placeholder="Search in this channel...">
+      <span class="search-close" id="searchClose">×</span>
     </div>
 
     <div class="content-split">
@@ -674,6 +800,12 @@
           <div class="input-hint">Enter to send · Shift+Enter for new line</div>
         </div>
       </div>
+
+      <!-- ── MEMBERS SIDEBAR ─────────────────────── -->
+      <aside class="members-sidebar" id="membersSidebar">
+        <div class="members-header">Online — <span id="memberCount">0</span></div>
+        <div class="members-list" id="membersList"></div>
+      </aside>
     </div>
   </main>
 
