@@ -103,3 +103,20 @@ function leavePreviousVoice(socket) {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🍌 Discord-Monkey structure running on port ${PORT}`));
+
+// Graceful shutdown for production (Render/K8s)
+process.on('SIGTERM', () => {
+  console.log('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    process.exit(0);
+  });
+});

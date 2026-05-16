@@ -156,7 +156,20 @@ async function joinVoiceChannel(channelId) {
   voiceDock.style.display = 'flex';
 
   // Acquire audio and video hardware tracks
-  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  } catch (err) {
+    console.error("Failed to get media with video and audio, trying audio only...", err);
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+    } catch (audioErr) {
+      console.error("Failed to get even audio...", audioErr);
+      alert("Could not access microphone/camera. Please check permissions.");
+      cleanUpVoice();
+      return;
+    }
+  }
+  
   addVideoNode('local', myName, localStream);
 
   socket.emit('join-voice', {
