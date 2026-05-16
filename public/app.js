@@ -32,11 +32,12 @@ const rtcConfig = {
       credential: 'TdkzU0crNP4oPMm1'
     }
   ],
-  bundlePolicy: 'max-bundle'
+  bundlePolicy: 'max-bundle',
+  iceCandidatePoolSize: 10 // Pre-gather candidates
 };
 
 let localStream = null;
-let peerConnections = {}; // Format: { [socketId]: { pc: RTCPeerConnection, iceBuffer: [], makingOffer: false, ignoreOffer: false, isPolite: false } }
+let peerConnections = {}; // Format: { [socketId]: { pc, iceBuffer, makingOffer, ignoreOffer, isPolite, isSettingRemoteAnswerPending } }
 let remoteStreams = {};   // Format: { [socketId]: MediaStream }
 let activeServers = {};
 let currentServerId = null;
@@ -186,7 +187,7 @@ async function joinVoiceChannel(channelId) {
       return;
     }
   }
-  
+
   addVideoNode('local', myName, localStream);
 
   socket.emit('join-voice', {
@@ -197,9 +198,12 @@ async function joinVoiceChannel(channelId) {
 }
 
 socket.on('current-room-monkeys', (users) => {
-  users.forEach(user => {
-    initiatePeerConnection(user.id, user.name);
-  });
+  // Add a small delay to ensure socket.id is properly set
+  setTimeout(() => {
+    users.forEach(user => {
+      initiatePeerConnection(user.id, user.name);
+    });
+  }, 100);
 });
 
 socket.on('peer-joined-voice', ({ id, name }) => {
@@ -207,26 +211,30 @@ socket.on('peer-joined-voice', ({ id, name }) => {
 });
 
 async function initiatePeerConnection(peerId, peerName) {
-  if (peerConnections[peerId]) return;
+  if (peerConnections[peerId]) {
+    console.log(`⚠️ Connection to ${peerName} already exists, skipping`);
+    return;
+  }
 
   const pc = new RTCPeerConnection(rtcConfig);
-  const isPolite = socket.id < peerId;
-  
-  peerConnections[peerId] = { 
-    pc, 
-    iceBuffer: [], 
-    makingOffer: false, 
-    ignoreOffer: false, 
-    isPolite 
+  const isPolite = socket.id < peerId; // Lexicographic comparison for deterministic politeness
+
+  peerConnections[peerId] = {
+    pc,
+    iceBuffer: [],
+    makingOffer: false,
+    ignoreOffer: false,
+    isPolite,
+    isSettingRemoteAnswerPending: false,
+    peerName // Store name for debugging
   };
 
-  // Ensure a persistent MediaStream exists for this peer
-  if (!remoteStreams[peerId]) {
-    remoteStreams[peerId] = new MediaStream();
-  }
+  // PRE-CREATE the remote MediaStream to avoid timing issues
+  remoteStreams[peerId] = new MediaStream();
 
   console.log(`🤝 Initiating with ${peerName} (${peerId}). I am ${isPolite ? 'POLITE' : 'IMPOLITE'}`);
 
+  // CONNECTION STATE MONITORING
   pc.oniceconnectionstatechange = () => {
     console.log(`❄️ ICE State with ${peerName}: ${pc.iceConnectionState}`);
     if (pc.iceConnectionState === 'failed') {
@@ -235,49 +243,74 @@ async function initiatePeerConnection(peerId, peerName) {
     }
   };
 
+  pc.onconnectionstatechange = () => {
+    console.log(`🔗 Connection State with ${peerName}: ${pc.connectionState}`);
+  };
+
+  // ICE CANDIDATES
   pc.onicecandidate = (e) => {
     if (e.candidate) {
       socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate: e.candidate } });
     }
   };
 
+  // TRACK HANDLING - THIS IS CRITICAL
   pc.ontrack = (e) => {
-    console.log(`🎵 Incoming track from ${peerName} (${peerId}):`, e.track.kind);
-    
-    // Fallback if no streams provided by browser
-    const streamToUse = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
-    
-    // Add all tracks from the incoming stream to our persistent one
-    streamToUse.getTracks().forEach(track => {
-      // Avoid duplicates
-      if (!remoteStreams[peerId].getTracks().find(t => t.id === track.id)) {
-        remoteStreams[peerId].addTrack(track);
-      }
-    });
+    console.log(`🎵 Incoming ${e.track.kind} track from ${peerName} (${peerId}), id: ${e.track.id}`);
 
+    // Add track to the persistent MediaStream for this peer
+    const existingTrack = remoteStreams[peerId].getTracks().find(t => t.id === e.track.id);
+    if (!existingTrack) {
+      remoteStreams[peerId].addTrack(e.track);
+      console.log(`✅ Added ${e.track.kind} track to ${peerName}'s stream. Total tracks: ${remoteStreams[peerId].getTracks().length}`);
+    }
+
+    // Handle track ending (camera off, etc)
+    e.track.onended = () => {
+      console.log(`🛑 Track ${e.track.kind} ended from ${peerName}`);
+      remoteStreams[peerId].removeTrack(e.track);
+    };
+
+    // Update/create video element with the stream
     addVideoNode(peerId, peerName, remoteStreams[peerId]);
   };
 
-  // Perfect Negotiation: Unified Negotiation Needed Handler
+  // PERFECT NEGOTIATION PATTERN - CRITICAL FIXES
+  let negotiationInProgress = false;
+
   pc.onnegotiationneeded = async () => {
+    // Prevent overlapping negotiations
+    if (negotiationInProgress) {
+      console.log(`⏳ Negotiation already in progress for ${peerName}, queuing...`);
+      return;
+    }
+
     try {
+      negotiationInProgress = true;
       peerConnections[peerId].makingOffer = true;
+
+      console.log(`📤 Creating offer for ${peerName}...`);
       await pc.setLocalDescription();
-      
+
       // Apply bitrate limits to the outgoing video sender
       applyBitrateLimits(pc);
-      
+
       socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { sdp: pc.localDescription } });
+      console.log(`📤 Sent ${pc.localDescription.type} to ${peerName}`);
     } catch (err) {
       console.error(`❌ Negotiation error for ${peerName}:`, err);
     } finally {
       peerConnections[peerId].makingOffer = false;
+      negotiationInProgress = false;
     }
   };
 
-  // Attach local tracks to trigger negotiation
+  // ADD LOCAL TRACKS - This triggers negotiationneeded
   if (localStream) {
-    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    localStream.getTracks().forEach(track => {
+      const sender = pc.addTrack(track, localStream);
+      console.log(`📤 Added local ${track.kind} track to connection with ${peerName}`);
+    });
   }
 }
 
@@ -288,7 +321,7 @@ function applyBitrateLimits(pc) {
       if (!parameters.encodings) parameters.encodings = [{}];
       parameters.encodings[0].maxBitrate = MAX_VIDEO_BITRATE;
       sender.setParameters(parameters).then(() => {
-        console.log(`📉 Bitrate limited to ${MAX_VIDEO_BITRATE / 1000}kbps for a peer.`);
+        console.log(`📉 Bitrate limited to ${MAX_VIDEO_BITRATE / 1000}kbps`);
       }).catch(e => console.error("Could not apply bitrate limits", e));
     }
   });
@@ -296,61 +329,91 @@ function applyBitrateLimits(pc) {
 
 socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
   const conn = peerConnections[senderPeerId];
-  if (!conn) return;
+  if (!conn) {
+    console.warn(`⚠️ Received signal from unknown peer ${senderPeerId}, ignoring`);
+    return;
+  }
+
   const pc = conn.pc;
+  const peerName = conn.peerName || senderPeerId;
 
   try {
     if (signal.sdp) {
-      const collision = signal.sdp.type === 'offer' && (conn.makingOffer || pc.signalingState !== 'stable');
-      conn.ignoreOffer = !conn.isPolite && collision;
+      const offerCollision = signal.sdp.type === 'offer' && (conn.makingOffer || pc.signalingState !== 'stable');
+
+      conn.ignoreOffer = !conn.isPolite && offerCollision;
 
       if (conn.ignoreOffer) {
-        console.log(`⚠️ Collision detected. Impolite peer ignoring offer from ${senderPeerId}`);
+        console.log(`⚠️ Collision detected. Impolite peer ignoring offer from ${peerName}`);
         return;
       }
 
+      // CRITICAL: Set flag to prevent race condition with answers
+      conn.isSettingRemoteAnswerPending = signal.sdp.type === 'answer';
+
+      console.log(`📥 Received ${signal.sdp.type} from ${peerName}`);
       await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-      
-      // Process buffered candidates
-      while (conn.iceBuffer.length > 0) {
-        const candidate = conn.iceBuffer.shift();
-        await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => { });
+      console.log(`✅ Set remote ${signal.sdp.type} from ${peerName}`);
+
+      conn.isSettingRemoteAnswerPending = false;
+
+      // FLUSH ICE CANDIDATE BUFFER
+      if (conn.iceBuffer.length > 0) {
+        console.log(`🧊 Flushing ${conn.iceBuffer.length} buffered ICE candidates for ${peerName}`);
+        for (const candidate of conn.iceBuffer) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (e) {
+            console.error(`Failed to add buffered candidate for ${peerName}:`, e);
+          }
+        }
+        conn.iceBuffer = [];
       }
 
+      // If we received an offer, create and send answer
       if (signal.sdp.type === 'offer') {
         await pc.setLocalDescription();
         applyBitrateLimits(pc);
         socket.emit('webrtc-signal', { targetPeerId: senderPeerId, signal: { sdp: pc.localDescription } });
+        console.log(`📤 Sent answer to ${peerName}`);
       }
     } else if (signal.candidate) {
       try {
+        // Only add candidate if we have a remote description
         if (pc.remoteDescription && pc.remoteDescription.type) {
           await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          console.log(`🧊 Added ICE candidate from ${peerName}`);
         } else {
+          console.log(`🧊 Buffering ICE candidate from ${peerName} (no remote description yet)`);
           conn.iceBuffer.push(signal.candidate);
         }
       } catch (err) {
-        if (!conn.ignoreOffer) console.error("Candidate Error:", err);
+        if (!conn.ignoreOffer) {
+          console.error(`❌ ICE candidate error for ${peerName}:`, err);
+        }
       }
     }
   } catch (err) {
-    console.error(`❌ Signaling state error for ${senderPeerId}:`, err);
+    console.error(`❌ Signaling error for ${peerName}:`, err);
   }
 });
 
 socket.on('peer-left-voice', (peerId) => {
+  console.log(`👋 Peer left: ${peerId}`);
+
   if (peerConnections[peerId]) {
     peerConnections[peerId].pc.close();
     delete peerConnections[peerId];
   }
   if (remoteStreams[peerId]) {
+    remoteStreams[peerId].getTracks().forEach(track => track.stop());
     delete remoteStreams[peerId];
   }
   const node = document.getElementById(`video-box-${peerId}`);
   if (node) node.remove();
 });
 
-// Overhauled Video/Audio Matrix Node Insertion 
+// FIXED: Video/Audio Node Insertion with proper stream handling
 function addVideoNode(id, labelName, stream) {
   let box = document.getElementById(`video-box-${id}`);
 
@@ -374,22 +437,30 @@ function addVideoNode(id, labelName, stream) {
   }
 
   const videoEl = box.querySelector('video');
-  
-  // CRITICAL: Only assign srcObject if it's different to prevent media element reload/mute
+
+  // CRITICAL: Only assign srcObject if it's actually different
   if (videoEl.srcObject !== stream) {
-    console.log(`📺 Mapping persistent stream for ${labelName}`);
+    console.log(`📺 Assigning stream to video element for ${labelName}. Tracks: ${stream.getTracks().length} (${stream.getAudioTracks().length} audio, ${stream.getVideoTracks().length} video)`);
     videoEl.srcObject = stream;
+
+    // CRITICAL: Set audio properties AFTER assignment
+    videoEl.muted = (id === 'local');
+    videoEl.volume = 1.0;
+
+    // Force play for remote streams
+    if (id !== 'local') {
+      videoEl.play().catch(err => {
+        console.log(`🔇 ${labelName} waiting for user interaction to play:`, err.message);
+      });
+    }
   }
 
-  // RE-AFFIRM AUDIO SETTINGS:
-  videoEl.muted = (id === 'local');
-  videoEl.volume = 1.0;
+  // Verify tracks are active
+  const hasActiveAudio = stream.getAudioTracks().some(t => t.enabled && t.readyState === 'live');
+  const hasActiveVideo = stream.getVideoTracks().some(t => t.enabled && t.readyState === 'live');
 
-  // Modern browser failsafe: Trigger play if paused to bypass autoplay blocks
-  if (videoEl.paused) {
-    videoEl.play().catch(err => {
-      console.log(`🔇 ${labelName} audio/video waiting for user interaction...`, err);
-    });
+  if (id !== 'local') {
+    console.log(`🔍 ${labelName} track status: Audio ${hasActiveAudio ? '✅' : '❌'}, Video ${hasActiveVideo ? '✅' : '❌'}`);
   }
 }
 
@@ -400,6 +471,10 @@ function cleanUpVoice() {
     peerConnections[id].pc.close();
   });
   peerConnections = {};
+
+  Object.keys(remoteStreams).forEach(id => {
+    remoteStreams[id].getTracks().forEach(track => track.stop());
+  });
   remoteStreams = {};
 
   if (localStream) {
@@ -419,15 +494,19 @@ document.getElementById('disconnectVoice').onclick = () => {
 document.getElementById('toggleMic').onclick = () => {
   if (localStream) {
     const audioTrack = localStream.getAudioTracks()[0];
-    audioTrack.enabled = !audioTrack.enabled;
-    document.getElementById('toggleMic').classList.toggle('active', !audioTrack.enabled);
+    if (audioTrack) {
+      audioTrack.enabled = !audioTrack.enabled;
+      document.getElementById('toggleMic').classList.toggle('active', !audioTrack.enabled);
+    }
   }
 };
 
 document.getElementById('toggleVid').onclick = () => {
   if (localStream) {
     const videoTrack = localStream.getVideoTracks()[0];
-    videoTrack.enabled = !videoTrack.enabled;
-    document.getElementById('toggleVid').classList.toggle('active', !videoTrack.enabled);
+    if (videoTrack) {
+      videoTrack.enabled = !videoTrack.enabled;
+      document.getElementById('toggleVid').classList.toggle('active', !videoTrack.enabled);
+    }
   }
 };
