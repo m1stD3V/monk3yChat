@@ -70,6 +70,7 @@ io.on('connection', (socket) => {
     socket.join(internalRoomId);
 
     userRegistry[socket.id] = { serverId, channelId, userName, internalRoomId };
+    console.log(`Debug: UserRegistry after registering ${socket.id}:`, Object.keys(userRegistry));
 
     // Fetch all other monkeys currently sitting in this voice channel
     const participants = Object.keys(userRegistry).filter(
