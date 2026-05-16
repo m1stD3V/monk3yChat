@@ -72,6 +72,7 @@ socket.on('auth-result', ({ success }) => {
   if (success) {
     loginOverlay.style.display = 'none';
     myName = usernameInput.value;
+    console.log(`[DEBUG] Login success. Username updated to: ${myName}`);
   } else {
     loginError.style.display = 'block';
   }
