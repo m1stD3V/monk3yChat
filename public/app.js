@@ -188,8 +188,22 @@ async function initiatePeerConnection(peerId, peerName, isCaller) {
     }
   };
 
+  // Robust multi-track collector for audio & video streams
   pc.ontrack = (e) => {
-    addVideoNode(peerId, peerName, e.streams[0]);
+    console.log(`🎵 Incoming track from ${peerName}:`, e.track.kind);
+    const remoteStream = e.streams[0];
+
+    // Build the video slot if it's missing from the DOM matrix
+    addVideoNode(peerId, peerName, remoteStream);
+
+    // FAILSAFE: Explicitly inject the full stream object onto the target tag
+    const box = document.getElementById(`video-box-${peerId}`);
+    if (box) {
+      const videoEl = box.querySelector('video');
+      if (videoEl && videoEl.srcObject !== remoteStream) {
+        videoEl.srcObject = remoteStream;
+      }
+    }
   };
 
   if (isCaller) {
@@ -230,7 +244,7 @@ socket.on('peer-left-voice', (peerId) => {
 function addVideoNode(id, labelName, stream) {
   let box = document.getElementById(`video-box-${id}`);
 
-  // If the video container already exists, dynamic cross-multiplex update stream configuration
+  // If the container exists, make sure the current active stream configuration matches
   if (box) {
     const videoEl = box.querySelector('video');
     if (videoEl && videoEl.srcObject !== stream) {
