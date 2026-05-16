@@ -43,10 +43,13 @@ io.on('connection', (socket) => {
   // Authentication
   socket.on('authenticate', ({ username, password }) => {
     const credentials = loadCredentials();
+    console.log(`Debug: Attempting login for ${username}`);
     const user = credentials.find(c => c.username === username && c.password === password);
     if (user) {
+      console.log(`Debug: Login successful for ${username}`);
       socket.emit('auth-result', { success: true });
     } else {
+      console.log(`Debug: Login failed for ${username}`);
       socket.emit('auth-result', { success: false });
     }
   });
