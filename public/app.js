@@ -42,6 +42,7 @@ let remoteStreams = {};   // Format: { [socketId]: MediaStream }
 let activeServers = {};
 let currentServerId = null;
 let currentTextChannelId = null;
+let currentVoiceChannelId = null;
 // ... existing constants ...
 let myName = "Monkey_" + Math.floor(Math.random() * 900);
 
