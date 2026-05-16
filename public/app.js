@@ -221,9 +221,11 @@ async function joinVoiceChannel(channelId) {
 }
 
 socket.on('current-room-monkeys', (users) => {
+  console.log(`[DEBUG] Received current-room-monkeys:`, users);
   // Add a small delay to ensure socket.id is properly set
   setTimeout(() => {
     users.forEach(user => {
+      console.log(`[DEBUG] Initiating peer connection for existing user:`, user);
       initiatePeerConnection(user.id, user.name);
     });
   }, 100);
