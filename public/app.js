@@ -37,6 +37,7 @@ const rtcConfig = {
 
 let localStream = null;
 let peerConnections = {}; // Format: { [socketId]: { pc: RTCPeerConnection, iceBuffer: [], makingOffer: false, ignoreOffer: false, isPolite: false } }
+let remoteStreams = {};   // Format: { [socketId]: MediaStream }
 let activeServers = {};
 let currentServerId = null;
 let currentTextChannelId = null;
@@ -209,7 +210,6 @@ async function initiatePeerConnection(peerId, peerName) {
   if (peerConnections[peerId]) return;
 
   const pc = new RTCPeerConnection(rtcConfig);
-  // Perfect Negotiation: Polite peer is determined by ID comparison
   const isPolite = socket.id < peerId;
   
   peerConnections[peerId] = { 
@@ -219,6 +219,11 @@ async function initiatePeerConnection(peerId, peerName) {
     ignoreOffer: false, 
     isPolite 
   };
+
+  // Ensure a persistent MediaStream exists for this peer
+  if (!remoteStreams[peerId]) {
+    remoteStreams[peerId] = new MediaStream();
+  }
 
   console.log(`🤝 Initiating with ${peerName} (${peerId}). I am ${isPolite ? 'POLITE' : 'IMPOLITE'}`);
 
@@ -237,8 +242,20 @@ async function initiatePeerConnection(peerId, peerName) {
   };
 
   pc.ontrack = (e) => {
-    const remoteStream = e.streams[0];
-    if (remoteStream) addVideoNode(peerId, peerName, remoteStream);
+    console.log(`🎵 Incoming track from ${peerName} (${peerId}):`, e.track.kind);
+    
+    // Fallback if no streams provided by browser
+    const streamToUse = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
+    
+    // Add all tracks from the incoming stream to our persistent one
+    streamToUse.getTracks().forEach(track => {
+      // Avoid duplicates
+      if (!remoteStreams[peerId].getTracks().find(t => t.id === track.id)) {
+        remoteStreams[peerId].addTrack(track);
+      }
+    });
+
+    addVideoNode(peerId, peerName, remoteStreams[peerId]);
   };
 
   // Perfect Negotiation: Unified Negotiation Needed Handler
@@ -326,6 +343,9 @@ socket.on('peer-left-voice', (peerId) => {
     peerConnections[peerId].pc.close();
     delete peerConnections[peerId];
   }
+  if (remoteStreams[peerId]) {
+    delete remoteStreams[peerId];
+  }
   const node = document.getElementById(`video-box-${peerId}`);
   if (node) node.remove();
 });
@@ -334,47 +354,43 @@ socket.on('peer-left-voice', (peerId) => {
 function addVideoNode(id, labelName, stream) {
   let box = document.getElementById(`video-box-${id}`);
 
-  // If the container exists, force a refresh of the stream and trigger play
-  if (box) {
-    const videoEl = box.querySelector('video');
-    if (videoEl) {
-      videoEl.srcObject = stream;
-      videoEl.muted = (id === 'local');
-      videoEl.volume = 1.0;
-      videoEl.play().catch(e => console.log("Refresh play failed:", e));
-    }
-    return;
+  // Create the box if it doesn't exist
+  if (!box) {
+    box = document.createElement('div');
+    box.classList.add('video-box');
+    box.id = `video-box-${id}`;
+
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+
+    const tag = document.createElement('div');
+    tag.classList.add('user-tag');
+    tag.innerText = labelName;
+
+    box.appendChild(video);
+    box.appendChild(tag);
+    videoGrid.appendChild(box);
   }
 
-  box = document.createElement('div');
-  box.classList.add('video-box');
-  box.id = `video-box-${id}`;
-
-  const video = document.createElement('video');
-  video.autoplay = true;
-  video.playsInline = true;
-  video.srcObject = stream;
-
-  // CRITICAL AUDIO HARDWARE MATCHING RULES:
-  if (id === 'local') {
-    video.muted = true; // Avoid user hearing self microphone feedback echo loops
-  } else {
-    video.muted = false; // Force remote peer video elements to be completely unmuted
-    video.volume = 1.0;   // Set full system capability volume values
+  const videoEl = box.querySelector('video');
+  
+  // CRITICAL: Only assign srcObject if it's different to prevent media element reload/mute
+  if (videoEl.srcObject !== stream) {
+    console.log(`📺 Mapping persistent stream for ${labelName}`);
+    videoEl.srcObject = stream;
   }
 
-  const tag = document.createElement('div');
-  tag.classList.add('user-tag');
-  tag.innerText = labelName;
+  // RE-AFFIRM AUDIO SETTINGS:
+  videoEl.muted = (id === 'local');
+  videoEl.volume = 1.0;
 
-  box.appendChild(video);
-  box.appendChild(tag);
-  videoGrid.appendChild(box);
-
-  // Modern browser failsafe: Trigger programmatic track activation to bypass strict autoplay policy blocks
-  video.play().catch(err => {
-    console.log("Browser blocked initial sound. Awaiting any dashboard click from user interaction...", err);
-  });
+  // Modern browser failsafe: Trigger play if paused to bypass autoplay blocks
+  if (videoEl.paused) {
+    videoEl.play().catch(err => {
+      console.log(`🔇 ${labelName} audio/video waiting for user interaction...`, err);
+    });
+  }
 }
 
 function cleanUpVoice() {
@@ -384,6 +400,7 @@ function cleanUpVoice() {
     peerConnections[id].pc.close();
   });
   peerConnections = {};
+  remoteStreams = {};
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
