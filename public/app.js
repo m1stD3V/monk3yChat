@@ -1,6 +1,21 @@
 // public/app.js
 const socket = io();
 
+// High-Scale Optimization Constants
+const MEDIA_CONSTRAINTS = {
+  video: {
+    width: { ideal: 640 },
+    height: { ideal: 480 },
+    frameRate: { ideal: 15, max: 20 }
+  },
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  }
+};
+const MAX_VIDEO_BITRATE = 250000; // 250kbps for 10-person mesh stability
+
 // Production WebRTC Configuration utilizing your dedicated Metered.ca infrastructure Relay
 const rtcConfig = {
   iceServers: [
@@ -158,9 +173,9 @@ async function joinVoiceChannel(channelId) {
 
   // Acquire audio and video hardware tracks
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localStream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS);
   } catch (err) {
-    console.error("Failed to get media with video and audio, trying audio only...", err);
+    console.error("Failed to get media with optimized constraints, trying audio only...", err);
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
     } catch (audioErr) {
@@ -191,16 +206,17 @@ socket.on('peer-joined-voice', ({ id, name }) => {
 });
 
 async function initiatePeerConnection(peerId, peerName, isCaller) {
-  if (peerConnections[peerId]) {
-    console.log(`⚠️ Connection with ${peerId} already exists, skipping...`);
-    return;
-  }
+  if (peerConnections[peerId]) return;
 
   const pc = new RTCPeerConnection(rtcConfig);
   peerConnections[peerId] = { pc, iceBuffer: [] };
 
   pc.oniceconnectionstatechange = () => {
     console.log(`❄️ ICE State with ${peerName}: ${pc.iceConnectionState}`);
+    if (pc.iceConnectionState === 'failed') {
+      console.log(`🔄 Attempting ICE Restart for ${peerName}...`);
+      pc.restartIce();
+    }
   };
 
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -211,22 +227,37 @@ async function initiatePeerConnection(peerId, peerName, isCaller) {
     }
   };
 
-  // Robust multi-track collector for audio & video streams
   pc.ontrack = (e) => {
-    console.log(`🎵 Incoming track from ${peerName} (${peerId}):`, e.track.kind);
-    
-    // Always use the primary stream from the event, which contains both tracks
     const remoteStream = e.streams[0];
-    if (remoteStream) {
-      addVideoNode(peerId, peerName, remoteStream);
-    }
+    if (remoteStream) addVideoNode(peerId, peerName, remoteStream);
   };
 
   if (isCaller) {
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { sdp: pc.localDescription } });
+    // Phase 1 Overhaul: Staggered signaling to prevent 10-person "storm"
+    const staggerDelay = Math.floor(Math.random() * 800); 
+    setTimeout(async () => {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      
+      // Apply bitrate limits to the outgoing video sender
+      applyBitrateLimits(pc);
+      
+      socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { sdp: pc.localDescription } });
+    }, staggerDelay);
   }
+}
+
+function applyBitrateLimits(pc) {
+  pc.getSenders().forEach(sender => {
+    if (sender.track && sender.track.kind === 'video') {
+      const parameters = sender.getParameters();
+      if (!parameters.encodings) parameters.encodings = [{}];
+      parameters.encodings[0].maxBitrate = MAX_VIDEO_BITRATE;
+      sender.setParameters(parameters).then(() => {
+        console.log(`📉 Bitrate limited to ${MAX_VIDEO_BITRATE / 1000}kbps for a peer.`);
+      }).catch(e => console.error("Could not apply bitrate limits", e));
+    }
+  });
 }
 
 socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
@@ -246,6 +277,7 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
     if (signal.sdp.type === 'offer') {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      applyBitrateLimits(pc);
       socket.emit('webrtc-signal', { targetPeerId: senderPeerId, signal: { sdp: pc.localDescription } });
     }
   } else if (signal.candidate) {

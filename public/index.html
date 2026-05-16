@@ -36,10 +36,27 @@
         .view-header { height: 56px; border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; padding: 0 20px; font-weight: 600; }
         
         .content-split { flex: 1; display: flex; overflow: hidden; }
-        .video-arena { flex: 2; background: #0b0f0c; padding: 20px; display: flex; flex-direction: column; gap: 16px; position: relative; }
-        .video-grid { flex: 1; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; overflow-y: auto; align-content: start; }
+        .video-arena { flex: 2; background: #0b0f0c; padding: 12px; display: flex; flex-direction: column; gap: 12px; position: relative; }
+        .video-grid { 
+            flex: 1; 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); 
+            gap: 12px; 
+            overflow-y: auto; 
+            align-content: start; 
+            padding-bottom: 80px; /* Space for dock */
+        }
         
-        .video-box { background: #1a261d; border-radius: 12px; overflow: hidden; position: relative; aspect-ratio: 16/9; border: 1px solid rgba(255,255,255,0.05); }
+        .video-box { 
+            background: #1a261d; 
+            border-radius: 8px; 
+            overflow: hidden; 
+            position: relative; 
+            aspect-ratio: 4/3; /* Better for portrait/squarish mobile cams */
+            border: 1px solid rgba(255,255,255,0.1); 
+            transition: transform 0.2s;
+        }
+        .video-box:hover { transform: scale(1.02); z-index: 5; }
         .video-box video { width: 100%; height: 100%; object-fit: cover; }
         .user-tag { position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.6); padding: 4px 8px; border-radius: 6px; font-size: 0.75rem; }
 
