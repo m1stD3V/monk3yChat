@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>monkey.chat | Premium Jungle Call</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-deep: #0b100c;
+            --bg-surface: #121a14;
+            --bg-card: rgba(26, 38, 29, 0.7);
+            --border-glow: rgba(244, 208, 63, 0.2);
+            --banana-yellow: #f4d03f;
+            --banana-muted: #c9ab33;
+            --text-main: #f0f4f1;
+            --text-muted: #8fa093;
+            --danger: #e74c3c;
+            --sidebar-width: 280px;
+            --chat-width: 340px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body {
+            background-color: var(--bg-deep);
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* --- LEFT SIDEBAR: NAVIGATION & STATUS --- */
+        .sidebar {
+            width: var(--sidebar-width);
+            background-color: var(--bg-surface);
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+            gap: 32px;
+            z-index: 10;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--banana-yellow);
+            letter-spacing: -0.5px;
+        }
+
+        .section-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .room-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-glow);
+            padding: 16px;
+            border-radius: 12px;
+            backdrop-filter: blur(8px);
+        }
+
+        .room-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 8px;
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #2ecc71;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #2ecc71;
+            animation: pulse 2s infinite;
+        }
+
+        /* --- MAIN VIEWPORT --- */
+        .main-stage {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            background: radial-gradient(circle at center, #142217 0%, #0b100c 100%);
+            padding: 24px;
+        }
+
+        /* --- VIDEO CANVAS (GRID) --- */
+        .video-grid {
+            flex: 1;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            align-content: center;
+            margin-bottom: 90px; /* Space for the floating dock */
+        }
+
+        .video-wrapper {
+            position: relative;
+            background-color: rgba(0, 0, 0, 0.4);
+            border-radius: 20px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            aspect-ratio: 16 / 9;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+
+        .video-wrapper.active-speaker {
+            border-color: var(--banana-yellow);
+            box-shadow: 0 0 25px rgba(244, 208, 63, 0.15);
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror view for natural interaction */
+        }
+        
+        #remoteVideo {
+            transform: scaleX(1); /* Don't mirror the remote peer */
+        }
+
+        .video-overlay-tag {
+            position: absolute;
+            bottom: 16px;
+            left: 16px;
+            background: rgba(18, 26, 20, 0.75);
+            backdrop-filter: blur(12px);
+            padding: 6px 14px;
+            border-radius: 30px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* --- FLOATING CONTROLS DOCK --- */
+        .controls-dock {
+            position: absolute;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(18, 26, 20, 0.85);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 12px 24px;
+            border-radius: 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+            z-index: 100;
+        }
+
+        .dock-btn {
+            width: 48px;
+            height: 48px;
+            border-radius: 14px;
+            border: none;
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-main);
+            font-size: 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .dock-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .dock-btn.active-yellow {
+            background: var(--banana-yellow);
+            color: var(--bg-deep);
+        }
+        .dock-btn.active-yellow:hover {
+            background: var(--banana-muted);
+        }
+
+        .dock-btn.btn-danger {
+            background: rgba(231, 76, 60, 0.15);
+            color: var(--danger);
+        }
+        .dock-btn.btn-danger:hover {
+            background: var(--danger);
+            color: var(--text-main);
+        }
+
+        .divider {
+            width: 1px;
+            height: 24px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* --- RIGHT SIDEBAR: CHAT PANEL --- */
+        .chat-panel {
+            width: var(--chat-width);
+            background-color: var(--bg-surface);
+            border-left: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .chat-header {
+            padding: 24px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .msg-bubble {
+            background: var(--bg-card);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            padding: 12px 16px;
+            border-radius: 16px;
+            border-top-left-radius: 4px;
+            max-width: 90%;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .msg-bubble.self {
+            border-top-left-radius: 16px;
+            border-top-right-radius: 4px;
+            align-self: flex-end;
+            background: rgba(244, 208, 63, 0.08);
+            border-color: rgba(244, 208, 63, 0.15);
+        }
+
+        .msg-meta {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+            font-weight: 600;
+        }
+
+        .msg-text {
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        .chat-input-area {
+            padding: 20px 24px;
+            background: rgba(0, 0, 0, 0.2);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            gap: 12px;
+        }
+
+        .chat-input {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 12px 16px;
+            border-radius: 12px;
+            color: var(--text-main);
+            outline: none;
+            font-size: 0.9rem;
+            transition: border-color 0.2s;
+        }
+
+        .chat-input:focus {
+            border-color: var(--banana-yellow);
+        }
+
+        .send-btn {
+            background: var(--banana-yellow);
+            color: var(--bg-deep);
+            border: none;
+            padding: 0 16px;
+            border-radius: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .send-btn:hover { background: var(--banana-muted); }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(46, 204, 113, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(46, 204, 113, 0); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Left Sidebar -->
+    <aside class="sidebar">
+        <div class="brand">
+            <span>🐒</span> monkey.chat
+        </div>
+        
+        <div>
+            <div class="section-title">Active Outpost</div>
+            <div class="room-card">
+                <div style="font-weight: 600; margin-bottom: 4px;" id="room-name-label">Loading Room...</div>
+                <div class="room-status">
+                    <div class="pulse-dot"></div>
+                    <span id="peer-status-text">Waiting for peers...</span>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Center Stage -->
+    <main class="main-stage">
+        <div class="video-grid">
+            <div class="video-wrapper active-speaker">
+                <video id="localVideo" autoplay playsinline muted></video>
+                <div class="video-overlay-tag">
+                    <span>🐵</span> You (Local Monkey)
+                </div>
+            </div>
+            <div class="video-wrapper">
+                <video id="remoteVideo" autoplay playsinline></video>
+                <div class="video-overlay-tag">
+                    <span>🦍</span> Remote Peer
+                </div>
+            </div>
+        </div>
+
+        <!-- Floating Controls -->
+        <div class="controls-dock">
+            <button id="toggleMic" class="dock-btn" title="Toggle Microphone">🎙️</button>
+            <button id="toggleVid" class="dock-btn" title="Toggle Camera">📹</button>
+            <button id="shareScreen" class="dock-btn" title="Share Screen">🖥️</button>
+            <div class="divider"></div>
+            <button id="toggleChat" class="dock-btn active-yellow" title="Toggle Chat Panel">💬</button>
+            <div class="divider"></div>
+            <button id="leaveCall" class="dock-btn btn-danger" title="Disconnect" onclick="window.location.reload();">❌</button>
+        </div>
+    </main>
+
+    <!-- Right Sidebar Chat -->
+    <aside class="chat-panel" id="chatPanel">
+        <div class="chat-header">
+            <span>Jungle Intel</span>
+            <span style="font-size: 0.85rem; color: var(--text-muted);" id="chat-count">1-on-1</span>
+        </div>
+        <div class="chat-messages" id="chat-messages">
+            <!-- Messages go here dynamically -->
+        </div>
+        <div class="chat-input-area">
+            <input type="text" id="chat-input" class="chat-input" placeholder="Transmit data...">
+            <button id="send-btn" class="send-btn">Send</button>
+        </div>
+    </aside>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
