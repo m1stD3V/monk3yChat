@@ -1,5 +1,8 @@
 // public/app.js
-const socket = io();
+const socket = io({
+  transports: ['websocket'],
+  upgrade: false
+});
 
 // High-Scale Optimization Constants
 const MEDIA_CONSTRAINTS = {

@@ -51,13 +51,10 @@ io.on('connection', (socket) => {
   // Authentication
   socket.on('authenticate', ({ username, password }) => {
     const credentials = loadCredentials();
-    console.log(`Debug: Attempting login for ${username}`);
     const user = credentials.find(c => c.username === username && c.password === password);
     if (user) {
-      console.log(`Debug: Login successful for ${username}`);
       socket.emit('auth-result', { success: true });
     } else {
-      console.log(`Debug: Login failed for ${username}`);
       socket.emit('auth-result', { success: false });
     }
   });
@@ -66,7 +63,6 @@ io.on('connection', (socket) => {
   socket.emit('init-discord-data', { servers: jungleServers });
 
   socket.on('join-voice', ({ serverId, channelId, userName }) => {
-    console.log(`Debug: Received join-voice request for ${userName} in ${serverId}/${channelId}`);
     // Disconnect from any previous voice channel first
     leavePreviousVoice(socket);
 
@@ -74,19 +70,16 @@ io.on('connection', (socket) => {
     socket.join(internalRoomId);
 
     userRegistry[socket.id] = { serverId, channelId, userName, internalRoomId };
-    console.log(`Debug: UserRegistry after registering ${socket.id}:`, Object.keys(userRegistry));
 
     // Fetch all other monkeys currently sitting in this voice channel
     const participants = Object.keys(userRegistry).filter(
       id => id !== socket.id && userRegistry[id].internalRoomId === internalRoomId
     );
-    console.log(`Debug: Participants in ${internalRoomId}:`, participants);
 
     // Send the newcomer a list of everyone already in the room
     socket.emit('current-room-monkeys', participants.map(id => ({ id, name: userRegistry[id].userName })));
 
     // Broadcast to existing members that a new peer joined
-    console.log(`Debug: Broadcasting peer-joined-voice for ${socket.id} to ${internalRoomId}`);
     socket.to(internalRoomId).emit('peer-joined-voice', {
       id: socket.id,
       name: userName
@@ -121,8 +114,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('leave-voice', () => leavePreviousVoice(socket));
-  socket.on('disconnect', (reason) => {
-    console.log(`Debug: User ${socket.id} disconnected. Reason: ${reason}`);
+  socket.on('disconnect', () => {
     leavePreviousVoice(socket);
     delete userRegistry[socket.id];
   });
