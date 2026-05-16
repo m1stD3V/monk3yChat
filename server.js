@@ -117,7 +117,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('leave-voice', () => leavePreviousVoice(socket));
-  socket.on('disconnect', () => {
+  socket.on('disconnect', (reason) => {
+    console.log(`Debug: User ${socket.id} disconnected. Reason: ${reason}`);
     leavePreviousVoice(socket);
     delete userRegistry[socket.id];
   });
