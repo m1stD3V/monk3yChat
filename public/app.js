@@ -37,6 +37,15 @@ const msgFeed = document.getElementById('msgFeed');
 const textInput = document.getElementById('textInput');
 const voiceDock = document.getElementById('voiceDock');
 
+// Ensure browser media element streams pick up interactions for autoplay permissions
+document.body.addEventListener('click', () => {
+  document.querySelectorAll('video').forEach(video => {
+    if (video.srcObject && video.id !== 'video-box-local') {
+      video.play().catch(() => { });
+    }
+  });
+}, { once: false });
+
 // --- 1. POPULATE DISCORD STRUCTURE ---
 socket.on('init-discord-data', ({ servers }) => {
   activeServers = servers;
@@ -217,10 +226,20 @@ socket.on('peer-left-voice', (peerId) => {
   if (node) node.remove();
 });
 
+// Overhauled Video/Audio Matrix Node Insertion 
 function addVideoNode(id, labelName, stream) {
-  if (document.getElementById(`video-box-${id}`)) return;
+  let box = document.getElementById(`video-box-${id}`);
 
-  const box = document.createElement('div');
+  // If the video container already exists, dynamic cross-multiplex update stream configuration
+  if (box) {
+    const videoEl = box.querySelector('video');
+    if (videoEl && videoEl.srcObject !== stream) {
+      videoEl.srcObject = stream;
+    }
+    return;
+  }
+
+  box = document.createElement('div');
   box.classList.add('video-box');
   box.id = `video-box-${id}`;
 
@@ -228,7 +247,14 @@ function addVideoNode(id, labelName, stream) {
   video.autoplay = true;
   video.playsInline = true;
   video.srcObject = stream;
-  if (id === 'local') video.muted = true; // Block local loopback echo feedback
+
+  // CRITICAL AUDIO HARDWARE MATCHING RULES:
+  if (id === 'local') {
+    video.muted = true; // Avoid user hearing self microphone feedback echo loops
+  } else {
+    video.muted = false; // Force remote peer video elements to be completely unmuted
+    video.volume = 1.0;   // Set full system capability volume values
+  }
 
   const tag = document.createElement('div');
   tag.classList.add('user-tag');
@@ -237,6 +263,11 @@ function addVideoNode(id, labelName, stream) {
   box.appendChild(video);
   box.appendChild(tag);
   videoGrid.appendChild(box);
+
+  // Modern browser failsafe: Trigger programmatic track activation to bypass strict autoplay policy blocks
+  video.play().catch(err => {
+    console.log("Browser blocked initial sound. Awaiting any dashboard click from user interaction...", err);
+  });
 }
 
 function cleanUpVoice() {
