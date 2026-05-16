@@ -77,6 +77,16 @@
 </head>
 <body>
 
+    <div id="loginOverlay" style="position: fixed; inset: 0; background: #070a08; display: flex; align-items: center; justify-content: center; z-index: 1000;">
+        <div style="background: #141d17; padding: 32px; border-radius: 12px; text-align: center; border: 1px solid rgba(255,255,255,0.1); width: 300px;">
+            <h2 style="margin-bottom: 24px;">Login to Monkey Chat</h2>
+            <input type="text" id="username" placeholder="Username" style="width: 100%; padding: 12px; margin-bottom: 12px; background: rgba(255,255,255,0.05); border: none; border-radius: 6px; color: #fff;">
+            <input type="password" id="password" placeholder="Password" style="width: 100%; padding: 12px; margin-bottom: 24px; background: rgba(255,255,255,0.05); border: none; border-radius: 6px; color: #fff;">
+            <button id="loginBtn" style="width: 100%; padding: 12px; background: #f4d03f; border: none; border-radius: 6px; font-weight: 700; cursor: pointer;">Connect</button>
+            <p id="loginError" style="color: #e74c3c; margin-top: 12px; display: none;">Invalid credentials</p>
+        </div>
+    </div>
+
     <!-- Column 1: Server Sidebar -->
     <nav class="guilds-bar" id="guildsBar">
         <div class="guild-icon active" style="font-weight:bold; font-size:0.9rem; color:var(--banana)">M.C</div>

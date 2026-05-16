@@ -42,7 +42,7 @@ let remoteStreams = {};   // Format: { [socketId]: MediaStream }
 let activeServers = {};
 let currentServerId = null;
 let currentTextChannelId = null;
-let currentVoiceChannelId = null;
+// ... existing constants ...
 let myName = "Monkey_" + Math.floor(Math.random() * 900);
 
 // UI Elements
@@ -54,10 +54,32 @@ const videoGrid = document.getElementById('videoGrid');
 const msgFeed = document.getElementById('msgFeed');
 const textInput = document.getElementById('textInput');
 const voiceDock = document.getElementById('voiceDock');
+const loginOverlay = document.getElementById('loginOverlay');
+const loginBtn = document.getElementById('loginBtn');
+const usernameInput = document.getElementById('username');
+const passwordInput = document.getElementById('password');
+const loginError = document.getElementById('loginError');
+
+// Authentication
+loginBtn.addEventListener('click', () => {
+  const username = usernameInput.value;
+  const password = passwordInput.value;
+  socket.emit('authenticate', { username, password });
+});
+
+socket.on('auth-result', ({ success }) => {
+  if (success) {
+    loginOverlay.style.display = 'none';
+    myName = usernameInput.value;
+  } else {
+    loginError.style.display = 'block';
+  }
+});
 
 // Ensure browser media element streams pick up interactions for autoplay permissions
 document.body.addEventListener('click', () => {
-  document.querySelectorAll('video').forEach(video => {
+// ... existing code ...
+
     if (video.srcObject && video.id !== 'video-box-local') {
       video.play().catch(() => { });
     }

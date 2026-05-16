@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -10,9 +11,19 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Credentials Loader
+const loadCredentials = () => {
+    const creds = fs.readFileSync(path.join(__dirname, 'credentials.txt'), 'utf8');
+    return creds.split('\n').filter(line => line.includes(':')).map(line => {
+        const [username, password] = line.split(':');
+        return { username: username.trim(), password: password.trim() };
+    });
+};
+
 // Mock Discord Server Database Structure
 const jungleServers = {
-  "canopy-hub": {
+// ...
+
     name: "Canopy Hub 🌳",
     textChannels: { "general": "💬 general-chat", "banana-talk": "🍌 banana-market" },
     voiceChannels: { "lounge": "🔊 The Lounge", "raid-room": "🦍 Gorilla Raid" }
@@ -29,6 +40,17 @@ const userRegistry = {};
 
 io.on('connection', (socket) => {
   console.log(`🐒 Monkey swung in: ${socket.id}`);
+
+  // Authentication
+  socket.on('authenticate', ({ username, password }) => {
+    const credentials = loadCredentials();
+    const user = credentials.find(c => c.username === username && c.password === password);
+    if (user) {
+      socket.emit('auth-result', { success: true });
+    } else {
+      socket.emit('auth-result', { success: false });
+    }
+  });
 
   // Bootstrap data for frontend layout
   socket.emit('init-discord-data', { servers: jungleServers });
