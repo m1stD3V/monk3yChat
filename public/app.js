@@ -78,8 +78,7 @@ socket.on('auth-result', ({ success }) => {
 
 // Ensure browser media element streams pick up interactions for autoplay permissions
 document.body.addEventListener('click', () => {
-// ... existing code ...
-
+  document.querySelectorAll('video').forEach(video => {
     if (video.srcObject && video.id !== 'video-box-local') {
       video.play().catch(() => { });
     }
