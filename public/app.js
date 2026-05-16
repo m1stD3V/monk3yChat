@@ -22,7 +22,6 @@ const rtcConfig = {
 
 let localStream = null;
 let peerConnections = {}; // Format: { [socketId]: RTCPeerConnection }
-let remoteStreams = {};   // Format: { [socketId]: MediaStream }
 let activeServers = {};
 let currentServerId = null;
 let currentTextChannelId = null;
@@ -212,15 +211,11 @@ async function initiatePeerConnection(peerId, peerName, isCaller) {
   pc.ontrack = (e) => {
     console.log(`🎵 Incoming track from ${peerName} (${peerId}):`, e.track.kind);
     
-    // Use or create a persistent MediaStream for this specific peer
-    if (!remoteStreams[peerId]) {
-      remoteStreams[peerId] = new MediaStream();
+    // Always use the primary stream from the event, which contains both tracks
+    const remoteStream = e.streams[0];
+    if (remoteStream) {
+      addVideoNode(peerId, peerName, remoteStream);
     }
-    
-    remoteStreams[peerId].addTrack(e.track);
-
-    // Build or update the video slot in the DOM matrix
-    addVideoNode(peerId, peerName, remoteStreams[peerId]);
   };
 
   if (isCaller) {
@@ -253,9 +248,6 @@ socket.on('peer-left-voice', (peerId) => {
     peerConnections[peerId].close();
     delete peerConnections[peerId];
   }
-  if (remoteStreams[peerId]) {
-    delete remoteStreams[peerId];
-  }
   const node = document.getElementById(`video-box-${peerId}`);
   if (node) node.remove();
 });
@@ -264,11 +256,12 @@ socket.on('peer-left-voice', (peerId) => {
 function addVideoNode(id, labelName, stream) {
   let box = document.getElementById(`video-box-${id}`);
 
-  // If the container exists, make sure the current active stream configuration matches
+  // If the container exists, force a refresh of the stream and trigger play
   if (box) {
     const videoEl = box.querySelector('video');
-    if (videoEl && videoEl.srcObject !== stream) {
+    if (videoEl) {
       videoEl.srcObject = stream;
+      videoEl.play().catch(e => console.log("Refresh play failed:", e));
     }
     return;
   }
@@ -311,7 +304,6 @@ function cleanUpVoice() {
     peerConnections[id].close();
   });
   peerConnections = {};
-  remoteStreams = {};
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
