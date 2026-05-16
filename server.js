@@ -75,11 +75,13 @@ io.on('connection', (socket) => {
     const participants = Object.keys(userRegistry).filter(
       id => id !== socket.id && userRegistry[id].internalRoomId === internalRoomId
     );
+    console.log(`Debug: Participants in ${internalRoomId}:`, participants);
 
     // Send the newcomer a list of everyone already in the room
     socket.emit('current-room-monkeys', participants.map(id => ({ id, name: userRegistry[id].userName })));
 
     // Broadcast to existing members that a new peer joined
+    console.log(`Debug: Broadcasting peer-joined-voice for ${socket.id} to ${internalRoomId}`);
     socket.to(internalRoomId).emit('peer-joined-voice', {
       id: socket.id,
       name: userName
