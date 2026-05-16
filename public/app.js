@@ -350,11 +350,13 @@ function applyBitrateLimits(pc) {
 }
 
 socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
+  console.log(`[DEBUG] Received signal from ${senderPeerId}:`, signal);
   const conn = peerConnections[senderPeerId];
   if (!conn) {
-    console.warn(`⚠️ Received signal from unknown peer ${senderPeerId}, ignoring`);
+    console.warn(`[DEBUG] Received signal from unknown peer ${senderPeerId}`);
     return;
   }
+// ...
 
   const pc = conn.pc;
   const peerName = conn.peerName || senderPeerId;
