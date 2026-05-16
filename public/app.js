@@ -36,7 +36,7 @@ const rtcConfig = {
 };
 
 let localStream = null;
-let peerConnections = {}; // Format: { [socketId]: { pc: RTCPeerConnection, iceBuffer: [] } }
+let peerConnections = {}; // Format: { [socketId]: { pc: RTCPeerConnection, iceBuffer: [], makingOffer: false, ignoreOffer: false, isPolite: false } }
 let activeServers = {};
 let currentServerId = null;
 let currentTextChannelId = null;
@@ -197,19 +197,30 @@ async function joinVoiceChannel(channelId) {
 
 socket.on('current-room-monkeys', (users) => {
   users.forEach(user => {
-    initiatePeerConnection(user.id, user.name, true);
+    initiatePeerConnection(user.id, user.name);
   });
 });
 
 socket.on('peer-joined-voice', ({ id, name }) => {
-  initiatePeerConnection(id, name, false);
+  initiatePeerConnection(id, name);
 });
 
-async function initiatePeerConnection(peerId, peerName, isCaller) {
+async function initiatePeerConnection(peerId, peerName) {
   if (peerConnections[peerId]) return;
 
   const pc = new RTCPeerConnection(rtcConfig);
-  peerConnections[peerId] = { pc, iceBuffer: [] };
+  // Perfect Negotiation: Polite peer is determined by ID comparison
+  const isPolite = socket.id < peerId;
+  
+  peerConnections[peerId] = { 
+    pc, 
+    iceBuffer: [], 
+    makingOffer: false, 
+    ignoreOffer: false, 
+    isPolite 
+  };
+
+  console.log(`🤝 Initiating with ${peerName} (${peerId}). I am ${isPolite ? 'POLITE' : 'IMPOLITE'}`);
 
   pc.oniceconnectionstatechange = () => {
     console.log(`❄️ ICE State with ${peerName}: ${pc.iceConnectionState}`);
@@ -218,8 +229,6 @@ async function initiatePeerConnection(peerId, peerName, isCaller) {
       pc.restartIce();
     }
   };
-
-  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
   pc.onicecandidate = (e) => {
     if (e.candidate) {
@@ -232,18 +241,26 @@ async function initiatePeerConnection(peerId, peerName, isCaller) {
     if (remoteStream) addVideoNode(peerId, peerName, remoteStream);
   };
 
-  if (isCaller) {
-    // Phase 1 Overhaul: Staggered signaling to prevent 10-person "storm"
-    const staggerDelay = Math.floor(Math.random() * 800); 
-    setTimeout(async () => {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+  // Perfect Negotiation: Unified Negotiation Needed Handler
+  pc.onnegotiationneeded = async () => {
+    try {
+      peerConnections[peerId].makingOffer = true;
+      await pc.setLocalDescription();
       
       // Apply bitrate limits to the outgoing video sender
       applyBitrateLimits(pc);
       
       socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { sdp: pc.localDescription } });
-    }, staggerDelay);
+    } catch (err) {
+      console.error(`❌ Negotiation error for ${peerName}:`, err);
+    } finally {
+      peerConnections[peerId].makingOffer = false;
+    }
+  };
+
+  // Attach local tracks to trigger negotiation
+  if (localStream) {
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
   }
 }
 
@@ -265,28 +282,42 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
   if (!conn) return;
   const pc = conn.pc;
 
-  if (signal.sdp) {
-    await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-    
-    // Process buffered candidates now that remote description is set
-    while (conn.iceBuffer.length > 0) {
-      const candidate = conn.iceBuffer.shift();
-      await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => { });
-    }
+  try {
+    if (signal.sdp) {
+      const collision = signal.sdp.type === 'offer' && (conn.makingOffer || pc.signalingState !== 'stable');
+      conn.ignoreOffer = !conn.isPolite && collision;
 
-    if (signal.sdp.type === 'offer') {
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      applyBitrateLimits(pc);
-      socket.emit('webrtc-signal', { targetPeerId: senderPeerId, signal: { sdp: pc.localDescription } });
+      if (conn.ignoreOffer) {
+        console.log(`⚠️ Collision detected. Impolite peer ignoring offer from ${senderPeerId}`);
+        return;
+      }
+
+      await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      
+      // Process buffered candidates
+      while (conn.iceBuffer.length > 0) {
+        const candidate = conn.iceBuffer.shift();
+        await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => { });
+      }
+
+      if (signal.sdp.type === 'offer') {
+        await pc.setLocalDescription();
+        applyBitrateLimits(pc);
+        socket.emit('webrtc-signal', { targetPeerId: senderPeerId, signal: { sdp: pc.localDescription } });
+      }
+    } else if (signal.candidate) {
+      try {
+        if (pc.remoteDescription && pc.remoteDescription.type) {
+          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        } else {
+          conn.iceBuffer.push(signal.candidate);
+        }
+      } catch (err) {
+        if (!conn.ignoreOffer) console.error("Candidate Error:", err);
+      }
     }
-  } else if (signal.candidate) {
-    if (pc.remoteDescription && pc.remoteDescription.type) {
-      await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(e => { });
-    } else {
-      // Buffer the candidate if remote description isn't ready
-      conn.iceBuffer.push(signal.candidate);
-    }
+  } catch (err) {
+    console.error(`❌ Signaling state error for ${senderPeerId}:`, err);
   }
 });
 
