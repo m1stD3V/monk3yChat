@@ -62,6 +62,7 @@ io.on('connection', (socket) => {
   socket.emit('init-discord-data', { servers: jungleServers });
 
   socket.on('join-voice', ({ serverId, channelId, userName }) => {
+    console.log(`Debug: Received join-voice request for ${userName} in ${serverId}/${channelId}`);
     // Disconnect from any previous voice channel first
     leavePreviousVoice(socket);
 
