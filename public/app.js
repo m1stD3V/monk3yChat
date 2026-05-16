@@ -1,222 +1,278 @@
-/**
- * app.js - monkey.chat client-side logic
- * 
- * Handles WebRTC peer connection, media capture, socket signaling, 
- * and UI interactions for the jungle-themed video chat.
- */
-
+// public/app.js
 const socket = io();
 
-// WebRTC Configuration: Using Google's public STUN server for NAT traversal
+// Production WebRTC Configuration utilizing your dedicated Metered.ca infrastructure Relay
 const rtcConfig = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' }, // Public Google STUN
+    { urls: 'stun:stun.metered.ca:80' },       // Metered STUN
+    {
+      urls: 'turn:global.turn.metered.ca:80',
+      username: '3668af38c652028b1a39b682',
+      credential: 'TdkzU0crNP4oPMm1'
+    },
+    {
+      urls: 'turn:global.turn.metered.ca:443?transport=tcp', // Fallback for strict firewalls/ports
+      username: '3668af38c652028b1a39b682',
+      credential: 'TdkzU0crNP4oPMm1'
+    }
+  ]
 };
 
-// Application State
-let localStream;      // Our camera/mic stream
-let remoteStream;     // The other monkey's stream
-let peerConnection;   // The RTCPeerConnection object
-let currentRoom = "canopy-canale-9"; // Default room ID
-let screenStream = null; // Holds screen share stream if active
+let localStream = null;
+let peerConnections = {}; // Format: { [socketId]: RTCPeerConnection }
+let activeServers = {};
+let currentServerId = null;
+let currentTextChannelId = null;
+let currentVoiceChannelId = null;
+let myName = "Monkey_" + Math.floor(Math.random() * 900);
 
-// --- UI Elements ---
-const localVideo = document.getElementById('localVideo');
-const remoteVideo = document.getElementById('remoteVideo');
-const chatMessages = document.getElementById('chat-messages');
-const chatInput = document.getElementById('chat-input');
-const sendBtn = document.getElementById('send-btn');
-const chatPanel = document.getElementById('chatPanel');
-const toggleChatBtn = document.getElementById('toggleChat');
-const peerStatusText = document.getElementById('peer-status-text');
-const shareScreenBtn = document.getElementById('shareScreen');
-const toggleMicBtn = document.getElementById('toggleMic');
-const toggleVidBtn = document.getElementById('toggleVid');
+// UI Elements
+const guildsBar = document.getElementById('guildsBar');
+const channelListContainer = document.getElementById('channelListContainer');
+const currentServerName = document.getElementById('currentServerName');
+const activeChannelHeader = document.getElementById('activeChannelHeader');
+const videoGrid = document.getElementById('videoGrid');
+const msgFeed = document.getElementById('msgFeed');
+const textInput = document.getElementById('textInput');
+const voiceDock = document.getElementById('voiceDock');
 
-// Initialize room label
-document.getElementById('room-name-label').innerText = currentRoom;
+// --- 1. POPULATE DISCORD STRUCTURE ---
+socket.on('init-discord-data', ({ servers }) => {
+  activeServers = servers;
+  guildsBar.innerHTML = '';
 
-/**
- * Starts the application by capturing local media and joining the signaling room.
- */
-async function init() {
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    localVideo.srcObject = localStream;
-    socket.emit('join-room', currentRoom);
-  } catch (err) {
-    console.error("Invasive tech blocked: Error accessing media devices.", err);
-    peerStatusText.innerText = "Media permissions blocked.";
+  Object.keys(servers).forEach((id, idx) => {
+    const btn = document.createElement('div');
+    btn.classList.add('guild-icon');
+    if (idx === 0) btn.classList.add('active');
+    btn.innerText = servers[id].name.substring(0, 2);
+    btn.title = servers[id].name;
+    btn.onclick = () => switchServer(id, btn);
+    guildsBar.appendChild(btn);
+  });
+
+  // Default to first server
+  switchServer(Object.keys(servers)[0]);
+});
+
+function switchServer(serverId, element = null) {
+  currentServerId = serverId;
+  const server = activeServers[serverId];
+  currentServerName.innerText = server.name;
+
+  if (element) {
+    document.querySelectorAll('.guild-icon').forEach(e => e.classList.remove('active'));
+    element.classList.add('active');
   }
+
+  renderChannels(server);
 }
 
-/**
- * Creates and configures the RTCPeerConnection.
- * @param {string} targetSocketId - The socket ID of the peer to connect to.
- */
-function createPeerConnection(targetSocketId) {
-  peerConnection = new RTCPeerConnection(rtcConfig);
+function renderChannels(server) {
+  channelListContainer.innerHTML = '';
 
-  // Add all local tracks (Audio/Video) to the connection
-  localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+  // Render Text Channels
+  const tcHead = document.createElement('div');
+  tcHead.classList.add('ch-category');
+  tcHead.innerText = "Text Channels";
+  channelListContainer.appendChild(tcHead);
 
-  // Handle incoming remote media tracks
-  peerConnection.ontrack = (event) => {
-    if (!remoteStream) {
-      remoteStream = new MediaStream();
-      remoteVideo.srcObject = remoteStream;
-      peerStatusText.innerText = "Connected to Peer 🦍";
+  Object.keys(server.textChannels).forEach(id => {
+    const el = document.createElement('div');
+    el.classList.add('channel-item');
+    el.innerText = "💬 " + id;
+    el.onclick = () => joinTextChannel(id);
+    channelListContainer.appendChild(el);
+  });
+
+  // Render Voice Channels
+  const vcHead = document.createElement('div');
+  vcHead.classList.add('ch-category');
+  vcHead.innerText = "Voice Channels";
+  channelListContainer.appendChild(vcHead);
+
+  Object.keys(server.voiceChannels).forEach(id => {
+    const el = document.createElement('div');
+    el.classList.add('channel-item');
+    el.id = `vc-item-${id}`;
+    el.innerText = "🔊 " + server.voiceChannels[id];
+    el.onclick = () => joinVoiceChannel(id);
+    channelListContainer.appendChild(el);
+  });
+
+  // Auto-join first text channel
+  joinTextChannel(Object.keys(server.textChannels)[0]);
+}
+
+// --- 2. TEXT CHAT SYSTEM ---
+function joinTextChannel(channelId) {
+  currentTextChannelId = channelId;
+  activeChannelHeader.innerText = `# ${channelId}`;
+  msgFeed.innerHTML = '';
+  socket.emit('join-text', { serverId: currentServerId, channelId });
+}
+
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && textInput.value.trim()) {
+    socket.emit('send-text-msg', {
+      serverId: currentServerId,
+      channelId: currentTextChannelId,
+      text: textInput.value.trim(),
+      userName: myName
+    });
+    textInput.value = '';
+  }
+});
+
+socket.on('receive-text-msg', ({ userName, text }) => {
+  const line = document.createElement('div');
+  line.classList.add('msg-line');
+  line.innerHTML = `<b>${userName}:</b> ${text}`;
+  msgFeed.appendChild(line);
+  msgFeed.scrollTop = msgFeed.scrollHeight;
+});
+
+// --- 3. MULTI-USER WEBRTC VOICE/VIDEO LOGIC ---
+async function joinVoiceChannel(channelId) {
+  if (currentVoiceChannelId === channelId) return;
+
+  // Clear old visual channel highlights
+  document.querySelectorAll('.channel-item').forEach(e => e.classList.remove('active-voice'));
+  const targetedItem = document.getElementById(`vc-item-${channelId}`);
+  if (targetedItem) targetedItem.classList.add('active-voice');
+
+  cleanUpVoice();
+  currentVoiceChannelId = channelId;
+  voiceDock.style.display = 'flex';
+
+  // Acquire audio and video hardware tracks
+  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  addVideoNode('local', myName, localStream);
+
+  socket.emit('join-voice', {
+    serverId: currentServerId,
+    channelId: currentVoiceChannelId,
+    userName: myName
+  });
+}
+
+socket.on('current-room-monkeys', (users) => {
+  users.forEach(user => {
+    initiatePeerConnection(user.id, user.name, true);
+  });
+});
+
+socket.on('peer-joined-voice', ({ id, name }) => {
+  initiatePeerConnection(id, name, false);
+});
+
+async function initiatePeerConnection(peerId, peerName, isCaller) {
+  const pc = new RTCPeerConnection(rtcConfig);
+  peerConnections[peerId] = pc;
+
+  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate: e.candidate } });
     }
-    remoteStream.addTrack(event.track);
   };
 
-  // Send ICE candidates to the peer via the signaling server
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate) {
-      socket.emit('signal', { to: targetSocketId, signal: { candidate: event.candidate } });
-    }
+  pc.ontrack = (e) => {
+    addVideoNode(peerId, peerName, e.streams[0]);
   };
+
+  if (isCaller) {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { sdp: pc.localDescription } });
+  }
 }
 
-// --- Socket Signaling Handlers ---
+socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
+  const pc = peerConnections[senderPeerId];
+  if (!pc) return;
 
-/**
- * When a new user connects to the room, we act as the 'caller' and create an offer.
- */
-socket.on('user-connected', async (userId) => {
-  peerStatusText.innerText = "Peer incoming...";
-  createPeerConnection(userId);
-  
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-  
-  socket.emit('signal', { to: userId, signal: { sdp: peerConnection.localDescription } });
-});
-
-/**
- * Handles incoming signaling data (SDP offers/answers and ICE candidates).
- */
-socket.on('signal', async (data) => {
-  // Initialize peer connection if it doesn't exist yet
-  if (!peerConnection) createPeerConnection(data.from);
-
-  if (data.signal.sdp) {
-    // Handle SDP offer or answer
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal.sdp));
-    
-    // If it's an offer, we must create and send an answer
-    if (data.signal.sdp.type === 'offer') {
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      socket.emit('signal', { to: data.from, signal: { sdp: peerConnection.localDescription } });
+  if (signal.sdp) {
+    await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+    if (signal.sdp.type === 'offer') {
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('webrtc-signal', { targetPeerId: senderPeerId, signal: { sdp: pc.localDescription } });
     }
-  } else if (data.signal.candidate) {
-    // Handle ICE candidates
+  } else if (signal.candidate) {
     try {
-      await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
-    } catch (e) {
-      console.error("ICE mapping glitch:", e);
-    }
+      await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+    } catch (err) { /* Ice mapping safety check */ }
   }
 });
 
-socket.on('user-disconnected', () => {
-  peerStatusText.innerText = "Peer left back to trees.";
-  if (remoteVideo) remoteVideo.srcObject = null;
-  remoteStream = null;
-  // Note: In a production app, we'd also close the peerConnection here
-});
-
-// --- UI Interaction Handlers ---
-
-// Toggle Chat Sidebar
-toggleChatBtn.addEventListener('click', () => {
-  const isHidden = chatPanel.style.display === 'none';
-  chatPanel.style.display = isHidden ? 'flex' : 'none';
-  toggleChatBtn.classList.toggle('active-yellow', isHidden);
-});
-
-// Screen Sharing Logic
-shareScreenBtn.addEventListener('click', async () => {
-  if (!screenStream) {
-    try {
-      screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      const videoTrack = screenStream.getVideoTracks()[0];
-      
-      // Replace the camera track with the screen track in the peer connection
-      const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
-      sender.replaceTrack(videoTrack);
-      
-      localVideo.srcObject = screenStream;
-      shareScreenBtn.classList.add('active-yellow');
-
-      // Revert back when screen sharing is stopped via browser UI
-      videoTrack.onended = () => stopScreenShare();
-    } catch (err) {
-      console.error("Screen capture rejected:", err);
-    }
-  } else {
-    stopScreenShare();
+socket.on('peer-left-voice', (peerId) => {
+  if (peerConnections[peerId]) {
+    peerConnections[peerId].close();
+    delete peerConnections[peerId];
   }
+  const node = document.getElementById(`video-box-${peerId}`);
+  if (node) node.remove();
 });
 
-function stopScreenShare() {
-  if (!screenStream) return;
-  screenStream.getTracks().forEach(track => track.stop());
-  screenStream = null;
+function addVideoNode(id, labelName, stream) {
+  if (document.getElementById(`video-box-${id}`)) return;
 
-  const videoTrack = localStream.getVideoTracks()[0];
-  const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
-  sender.replaceTrack(videoTrack);
-  
-  localVideo.srcObject = localStream;
-  shareScreenBtn.classList.remove('active-yellow');
+  const box = document.createElement('div');
+  box.classList.add('video-box');
+  box.id = `video-box-${id}`;
+
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.playsInline = true;
+  video.srcObject = stream;
+  if (id === 'local') video.muted = true; // Block local loopback echo feedback
+
+  const tag = document.createElement('div');
+  tag.classList.add('user-tag');
+  tag.innerText = labelName;
+
+  box.appendChild(video);
+  box.appendChild(tag);
+  videoGrid.appendChild(box);
 }
 
-// Media Control Toggles (Mic/Video)
-toggleMicBtn.addEventListener('click', () => {
-  const audioTrack = localStream.getAudioTracks()[0];
-  audioTrack.enabled = !audioTrack.enabled;
-  toggleMicBtn.innerText = audioTrack.enabled ? '🎙️' : '🚫';
-  toggleMicBtn.classList.toggle('btn-danger', !audioTrack.enabled);
-});
+function cleanUpVoice() {
+  socket.emit('leave-voice');
 
-toggleVidBtn.addEventListener('click', () => {
-  const videoTrack = localStream.getVideoTracks()[0];
-  videoTrack.enabled = !videoTrack.enabled;
-  toggleVidBtn.innerText = videoTrack.enabled ? '📹' : '❌';
-  toggleVidBtn.classList.toggle('btn-danger', !videoTrack.enabled);
-});
+  Object.keys(peerConnections).forEach(id => {
+    peerConnections[id].close();
+  });
+  peerConnections = {};
 
-// --- Chat Functionality ---
-
-sendBtn.addEventListener('click', sendTextMessage);
-chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendTextMessage(); });
-
-function sendTextMessage() {
-  const msg = chatInput.value.trim();
-  if (msg) {
-    socket.emit('chat-message', { roomId: currentRoom, text: msg, hostId: socket.id });
-    chatInput.value = '';
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
+    localStream = null;
   }
+  videoGrid.innerHTML = '';
+  voiceDock.style.display = 'none';
 }
 
-socket.on('chat-message', (data) => {
-  const msgEl = document.createElement('div');
-  msgEl.classList.add('msg-bubble');
+document.getElementById('disconnectVoice').onclick = () => {
+  cleanUpVoice();
+  document.querySelectorAll('.channel-item').forEach(e => e.classList.remove('active-voice'));
+};
 
-  // Determine if we sent this message or if it's from a peer
-  const isSelf = socket.id === data.senderId || (data.sender === 'Host 🐒' && !peerConnection);
-  if (isSelf) {
-    msgEl.classList.add('self');
+// Toggle Controls
+document.getElementById('toggleMic').onclick = () => {
+  if (localStream) {
+    const audioTrack = localStream.getAudioTracks()[0];
+    audioTrack.enabled = !audioTrack.enabled;
+    document.getElementById('toggleMic').classList.toggle('active', !audioTrack.enabled);
   }
+};
 
-  msgEl.innerHTML = `
-        <div class="msg-meta">${data.sender}</div>
-        <div class="msg-text">${data.text}</div>
-    `;
-  chatMessages.appendChild(msgEl);
-  chatMessages.scrollTop = chatMessages.scrollHeight; // Auto-scroll to bottom
-});
-
-// Entry point
-init();
+document.getElementById('toggleVid').onclick = () => {
+  if (localStream) {
+    const videoTrack = localStream.getVideoTracks()[0];
+    videoTrack.enabled = !videoTrack.enabled;
+    document.getElementById('toggleVid').classList.toggle('active', !videoTrack.enabled);
+  }
+};
