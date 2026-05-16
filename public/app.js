@@ -21,7 +21,7 @@ const rtcConfig = {
 };
 
 let localStream = null;
-let peerConnections = {}; // Format: { [socketId]: RTCPeerConnection }
+let peerConnections = {}; // Format: { [socketId]: { pc: RTCPeerConnection, iceBuffer: [] } }
 let activeServers = {};
 let currentServerId = null;
 let currentTextChannelId = null;
@@ -197,7 +197,11 @@ async function initiatePeerConnection(peerId, peerName, isCaller) {
   }
 
   const pc = new RTCPeerConnection(rtcConfig);
-  peerConnections[peerId] = pc;
+  peerConnections[peerId] = { pc, iceBuffer: [] };
+
+  pc.oniceconnectionstatechange = () => {
+    console.log(`❄️ ICE State with ${peerName}: ${pc.iceConnectionState}`);
+  };
 
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
@@ -226,26 +230,37 @@ async function initiatePeerConnection(peerId, peerName, isCaller) {
 }
 
 socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
-  const pc = peerConnections[senderPeerId];
-  if (!pc) return;
+  const conn = peerConnections[senderPeerId];
+  if (!conn) return;
+  const pc = conn.pc;
 
   if (signal.sdp) {
     await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+    
+    // Process buffered candidates now that remote description is set
+    while (conn.iceBuffer.length > 0) {
+      const candidate = conn.iceBuffer.shift();
+      await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => { });
+    }
+
     if (signal.sdp.type === 'offer') {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       socket.emit('webrtc-signal', { targetPeerId: senderPeerId, signal: { sdp: pc.localDescription } });
     }
   } else if (signal.candidate) {
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-    } catch (err) { /* Ice mapping safety check */ }
+    if (pc.remoteDescription && pc.remoteDescription.type) {
+      await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(e => { });
+    } else {
+      // Buffer the candidate if remote description isn't ready
+      conn.iceBuffer.push(signal.candidate);
+    }
   }
 });
 
 socket.on('peer-left-voice', (peerId) => {
   if (peerConnections[peerId]) {
-    peerConnections[peerId].close();
+    peerConnections[peerId].pc.close();
     delete peerConnections[peerId];
   }
   const node = document.getElementById(`video-box-${peerId}`);
@@ -261,6 +276,8 @@ function addVideoNode(id, labelName, stream) {
     const videoEl = box.querySelector('video');
     if (videoEl) {
       videoEl.srcObject = stream;
+      videoEl.muted = (id === 'local');
+      videoEl.volume = 1.0;
       videoEl.play().catch(e => console.log("Refresh play failed:", e));
     }
     return;
@@ -301,7 +318,7 @@ function cleanUpVoice() {
   socket.emit('leave-voice');
 
   Object.keys(peerConnections).forEach(id => {
-    peerConnections[id].close();
+    peerConnections[id].pc.close();
   });
   peerConnections = {};
 
