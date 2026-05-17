@@ -676,7 +676,9 @@ async function initiatePeerConnection(peerId, peerName, shouldOffer = true) {
 
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
-      debug(`[WebRTC] Local candidate gathered for ${peerName}: ${candidate.type || 'unknown'} (${candidate.protocol})`);
+      const addr = candidate.address || candidate.ip || (candidate.candidate && candidate.candidate.split(' ')[4]) || '?';
+      const ipVer = addr.includes(':') ? 'IPv6' : 'IPv4';
+      debug(`[WebRTC] Local candidate for ${peerName}: type=${candidate.type || 'unknown'} proto=${candidate.protocol} addr=${addr} (${ipVer})`);
       socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate } });
     } else {
       debug(`[WebRTC] ICE candidate gathering complete for ${peerName}`);
@@ -832,7 +834,9 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
         }
       }
     } else if (signal.candidate) {
-      debug(`[WebRTC] Received remote candidate from ${peerName}: ${signal.candidate.type || 'unknown'}`);
+      const c = signal.candidate;
+      const addr = c.address || c.ip || (c.candidate && c.candidate.split(' ')[4]) || '?';
+      debug(`[WebRTC] Remote candidate from ${peerName}: type=${c.type || 'unknown'} proto=${c.protocol} addr=${addr}`);
       try {
         if (pc.remoteDescription && !conn.isSettingRemoteDescriptionPending) {
           await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));

@@ -35,7 +35,7 @@ async function fetchTurnCredentials() {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    debug(`[TURN] Fetched credentials from Metered API (${data.length} iceServers)`);
+    console.log(`[TURN] Fetched credentials from Metered API (${data.length} iceServers):`, JSON.stringify(data));
     return data;
   } catch (err) {
     console.error('[TURN] Failed to fetch credentials from Metered API:', err.message);
@@ -43,11 +43,16 @@ async function fetchTurnCredentials() {
   }
 }
 
+const IPV6_STUN = { urls: 'stun:stun6.l.google.com:19302' };
+
 function buildRtcConfig() {
   const mode = process.env.ICE_MODE || 'stun-only'; // stun-only | relay-only | normal
   if (mode === 'stun-only') {
+    const stunServers = fetchedIceServers?.length
+      ? fetchedIceServers.filter(s => s.urls?.startsWith('stun:'))
+      : [{ urls: 'stun:stun.relay.metered.ca:80' }];
     return {
-      iceServers: [{ urls: 'stun:stun.relay.metered.ca:80' }],
+      iceServers: [...stunServers, IPV6_STUN],
       bundlePolicy: 'max-bundle',
       iceCandidatePoolSize: 10
     };
@@ -60,7 +65,7 @@ function buildRtcConfig() {
       { urls: 'turn:global.relay.metered.ca:443', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
       { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL }
     ];
-    return { iceServers: servers, iceTransportPolicy: 'relay', bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
+    return { iceServers: [...servers, IPV6_STUN], iceTransportPolicy: 'relay', bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
   }
   // normal mode (default)
   const iceServers = fetchedIceServers || [
@@ -70,7 +75,7 @@ function buildRtcConfig() {
     { urls: 'turn:global.relay.metered.ca:443', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
     { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL }
   ];
-  return { iceServers, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
+  return { iceServers: [...iceServers, IPV6_STUN], bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
 }
 
 async function refreshTurnCredentials() {
