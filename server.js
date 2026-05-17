@@ -81,8 +81,10 @@ function clearServerCache(serverId) {
 }
 
 // ─── USER REGISTRY ───────────────────────────────────────
-// socketId → { serverId, channelId, internalRoomId, userName, role }
+// socketId → { serverId, channelId, internalRoomId, userName, role, token }
 const userRegistry = {};
+// token → { userName, role }
+const sessionRegistry = {};
 
 function broadcastUserList() {
   const users = Object.entries(userRegistry).map(([socketId, u]) => ({
@@ -99,41 +101,51 @@ io.on('connection', (socket) => {
   console.log(`🐒 Connected: ${socket.id}`);
 
   // ── Authentication
-  socket.on('authenticate', ({ username, password }) => {
-    const creds = loadCredentials();
-    const user = creds.find(c => c.username === username && c.password === password);
+  socket.on('authenticate', ({ username, password, token }) => {
+    let user;
+    if (token && sessionRegistry[token]) {
+      user = { username: sessionRegistry[token].userName, role: sessionRegistry[token].role };
+    } else {
+      const creds = loadCredentials();
+      user = creds.find(c => c.username === username && c.password === password);
+      if (user) {
+        token = Math.random().toString(36).substring(2) + Date.now().toString(36);
+        sessionRegistry[token] = { userName: user.username, role: user.role };
+      }
+    }
+
     if (user) {
       userRegistry[socket.id] = {
         userName: user.username,
         role: user.role,
         serverId: null,
         channelId: null,
-        internalRoomId: null
+        internalRoomId: null,
+        token: token
       };
-      socket.emit('auth-result', { success: true, role: user.role });
+      socket.emit('auth-result', { success: true, role: user.role, token: token });
+      socket.emit('init-discord-data', { servers: jungleServers });
       broadcastUserList();
-      console.log(`✅ Auth: ${username} (${user.role})`);
+      console.log(`✅ Auth: ${user.username} (${user.role})`);
     } else {
       socket.emit('auth-result', { success: false });
-      console.log(`❌ Auth failed: ${username}`);
+      console.log(`❌ Auth failed: ${username || 'Token login'}`);
     }
   });
 
-  // ── Bootstrap data
-  socket.emit('init-discord-data', { servers: jungleServers });
-
   // ── Join voice
-  socket.on('join-voice', ({ serverId, channelId, userName }) => {
+  socket.on('join-voice', ({ serverId, channelId }) => {
+    const userData = userRegistry[socket.id];
+    if (!userData) return;
+
     leavePreviousVoice(socket);
 
     const roomId = `vc-${serverId}-${channelId}`;
     socket.join(roomId);
 
-    if (userRegistry[socket.id]) {
-      userRegistry[socket.id].serverId = serverId;
-      userRegistry[socket.id].channelId = channelId;
-      userRegistry[socket.id].internalRoomId = roomId;
-    }
+    userData.serverId = serverId;
+    userData.channelId = channelId;
+    userData.internalRoomId = roomId;
 
     const existing = Object.keys(userRegistry).filter(
       id => id !== socket.id && userRegistry[id].internalRoomId === roomId
@@ -143,17 +155,20 @@ io.on('connection', (socket) => {
       id, name: userRegistry[id].userName
     })));
 
-    socket.to(roomId).emit('peer-joined-voice', { id: socket.id, name: userName });
-    console.log(`🔊 ${userName} joined voice: ${roomId}`);
+    socket.to(roomId).emit('peer-joined-voice', { id: socket.id, name: userData.userName });
+    console.log(`🔊 ${userData.userName} joined voice: ${roomId}`);
   });
 
   // ── WebRTC signaling
   socket.on('webrtc-signal', ({ targetPeerId, signal }) => {
+    if (!userRegistry[socket.id]) return;
     io.to(targetPeerId).emit('webrtc-signal', { senderPeerId: socket.id, signal });
   });
 
   // ── Join text channel (and send history)
   socket.on('join-text', ({ serverId, channelId }) => {
+    if (!userRegistry[socket.id]) return;
+
     // Leave old text rooms
     Array.from(socket.rooms).filter(r => r.startsWith('tx-')).forEach(r => socket.leave(r));
     socket.join(`tx-${serverId}-${channelId}`);
@@ -166,18 +181,19 @@ io.on('connection', (socket) => {
   });
 
   // ── Text message
-  socket.on('send-text-msg', ({ serverId, channelId, text, userName, role }) => {
+  socket.on('send-text-msg', ({ serverId, channelId, text }) => {
+    const userData = userRegistry[socket.id];
+    if (!userData) return;
+
     // Sanitize text length
     const safeText = String(text).substring(0, 2000);
-    const userData = userRegistry[socket.id];
-    const effectiveRole = userData?.role || role || 'member';
 
     const msgObj = {
       id: `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       senderId: socket.id,
-      userName,
+      userName: userData.userName,
       text: safeText,
-      role: effectiveRole,
+      role: userData.role,
       timestamp: Date.now()
     };
 

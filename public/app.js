@@ -257,9 +257,7 @@ function sendMessage() {
   socket.emit('send-text-msg', {
     serverId: currentServerId,
     channelId: currentTextChannelId,
-    text,
-    userName: myName,
-    role: myRole
+    text
   });
   textInput.value = '';
   textInput.style.height = 'auto';
@@ -289,10 +287,11 @@ loginBtn.addEventListener('click', () => {
   el.addEventListener('keydown', e => { if (e.key === 'Enter') loginBtn.click(); });
 });
 
-socket.on('auth-result', ({ success, role }) => {
+socket.on('auth-result', ({ success, role, token }) => {
   if (success) {
+    if (token) sessionStorage.setItem('mc_token', token);
     loginOverlay.style.display = 'none';
-    myName = usernameInput.value.trim();
+    myName = usernameInput.value.trim() || myName;
     myRole = role || 'member';
     // Update user panel
     selfAvatar.textContent = myName.charAt(0).toUpperCase();
@@ -304,6 +303,8 @@ socket.on('auth-result', ({ success, role }) => {
     showToast(`Welcome back, ${myName}!`, '🐒');
     console.log(`[Auth] Logged in as ${myName} (${myRole})`);
   } else {
+    sessionStorage.removeItem('mc_token');
+    loginOverlay.style.display = 'flex';
     loginError.style.display = 'block';
     passwordInput.value = '';
     passwordInput.focus();
@@ -634,7 +635,7 @@ async function joinVoiceChannel(channelId) {
   }
 
   addVideoNode('local', myName, localStream);
-  socket.emit('join-voice', { serverId: currentServerId, channelId, userName: myName });
+  socket.emit('join-voice', { serverId: currentServerId, channelId });
   showToast(`Joined ${activeChannelHeader.textContent}`, '🔊');
 }
 
@@ -1161,6 +1162,11 @@ socket.on('disconnect', () => {
 });
 
 socket.on('connect', () => {
+  const token = sessionStorage.getItem('mc_token');
+  if (token) {
+    socket.emit('authenticate', { token });
+  }
+
   if (myName) {
     showToast('Reconnected', '✅');
     selfStatus.textContent = '● online';
