@@ -21,32 +21,59 @@ function debug(...args) {
   if (process.env.DEBUG) console.log(...args);
 }
 
-function getRtcConfig() {
-  const username = process.env.TURN_USERNAME || '4f896608fcb95956035370ff';
-  const credential = process.env.TURN_CREDENTIAL || 'fsReP4d/VohYU6Ei';
-  return {
-    iceServers: [
-      { urls: 'stun:stun.relay.metered.ca:80' },
-      {
-        urls: [
-          'turn:global.relay.metered.ca:80',
-          'turn:global.relay.metered.ca:80?transport=tcp',
-          'turn:global.relay.metered.ca:443',
-          'turns:global.relay.metered.ca:443?transport=tcp'
-        ],
-        username,
-        credential
-      }
-    ],
-    bundlePolicy: 'max-bundle',
-    iceCandidatePoolSize: 10
-  };
+const METERED_DOMAIN = process.env.METERED_DOMAIN;
+const METERED_API_KEY = process.env.METERED_API_KEY;
+const TURN_USERNAME = process.env.TURN_USERNAME || '4f896608fcb95956035370ff';
+const TURN_CREDENTIAL = process.env.TURN_CREDENTIAL || 'fsReP4d/VohYU6Ei';
+
+let fetchedIceServers = null;
+
+async function fetchTurnCredentials() {
+  if (!METERED_DOMAIN || !METERED_API_KEY) return null;
+  try {
+    const url = `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    debug(`[TURN] Fetched credentials from Metered API (${data.length} iceServers)`);
+    return data;
+  } catch (err) {
+    console.error('[TURN] Failed to fetch credentials from Metered API:', err.message);
+    return null;
+  }
 }
 
-const rtcConfigScript = `<script>window.__RTC_CONFIG = ${JSON.stringify(getRtcConfig())};</script>`;
-const indexHtml = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf-8').replace('</head>', rtcConfigScript + '</head>');
+function buildRtcConfig() {
+  const iceServers = fetchedIceServers || [
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    {
+      urls: [
+        'turns:global.relay.metered.ca:443',
+        'turn:global.relay.metered.ca:443',
+        'turn:global.relay.metered.ca:80?transport=tcp'
+      ],
+      username: TURN_USERNAME,
+      credential: TURN_CREDENTIAL
+    }
+  ];
+  return { iceServers, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
+}
 
-app.get('/', (req, res) => res.type('html').send(indexHtml));
+async function refreshTurnCredentials() {
+  const creds = await fetchTurnCredentials();
+  if (creds) fetchedIceServers = creds;
+}
+
+function renderIndexHtml() {
+  const configScript = `<script>window.__RTC_CONFIG = ${JSON.stringify(buildRtcConfig())};</script>`;
+  return fs.readFileSync(path.join(publicDir, 'index.html'), 'utf-8').replace('</head>', configScript + '</head>');
+}
+
+// Fetch credentials at startup, then refresh every 6 hours
+refreshTurnCredentials();
+setInterval(refreshTurnCredentials, 6 * 60 * 60 * 1000);
+
+app.get('/', (req, res) => res.type('html').send(renderIndexHtml()));
 app.use(express.static(publicDir));
 
 const loadCredentials = () => {

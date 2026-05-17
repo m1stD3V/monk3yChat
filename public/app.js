@@ -689,7 +689,10 @@ async function initiatePeerConnection(peerId, peerName) {
 
   pc.oniceconnectionstatechange = () => {
     debug(`[WebRTC] ${peerName} ICE state: ${pc.iceConnectionState}`);
-    if (pc.iceConnectionState === 'failed') {
+    if (pc.iceConnectionState === 'disconnected') {
+      debug(`[WebRTC] ICE disconnected for ${peerName}, consent refresh likely timed out, restarting...`);
+      pc.restartIce();
+    } else if (pc.iceConnectionState === 'failed') {
       debug(`[WebRTC] ICE failed for ${peerName}, restarting...`);
       pc.restartIce();
     }
