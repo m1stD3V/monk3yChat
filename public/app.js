@@ -15,9 +15,27 @@ const MSG_GROUP_THRESHOLD = 5 * 60 * 1000; // 5 minutes → new group header
 const rtcConfig = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun.metered.ca:80' },
-    { urls: 'turn:global.turn.metered.ca:80', username: '3668af38c652028b1a39b682', credential: 'TdkzU0crNP4oPMm1' },
-    { urls: 'turn:global.turn.metered.ca:443?transport=tcp', username: '3668af38c652028b1a39b682', credential: 'TdkzU0crNP4oPMm1' }
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    {
+      urls: 'turn:global.relay.metered.ca:80',
+      username: '3668af38c652028b1a39b682',
+      credential: 'TdkzU0crNP4oPMm1'
+    },
+    {
+      urls: 'turn:global.relay.metered.ca:443',
+      username: '3668af38c652028b1a39b682',
+      credential: 'TdkzU0crNP4oPMm1'
+    },
+    {
+      urls: 'turn:global.relay.metered.ca:443?transport=tcp',
+      username: '3668af38c652028b1a39b682',
+      credential: 'TdkzU0crNP4oPMm1'
+    },
+    {
+      urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+      username: '3668af38c652028b1a39b682',
+      credential: 'TdkzU0crNP4oPMm1'
+    }
   ],
   bundlePolicy: 'max-bundle',
   iceCandidatePoolSize: 10
