@@ -44,17 +44,31 @@ async function fetchTurnCredentials() {
 }
 
 function buildRtcConfig() {
+  const mode = process.env.ICE_MODE || 'stun-only'; // stun-only | relay-only | normal
+  if (mode === 'stun-only') {
+    return {
+      iceServers: [{ urls: 'stun:stun.relay.metered.ca:80' }],
+      bundlePolicy: 'max-bundle',
+      iceCandidatePoolSize: 10
+    };
+  }
+  if (mode === 'relay-only') {
+    const servers = fetchedIceServers || [
+      { urls: 'stun:stun.relay.metered.ca:80' },
+      { urls: 'turn:global.relay.metered.ca:80', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+      { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+      { urls: 'turn:global.relay.metered.ca:443', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+      { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL }
+    ];
+    return { iceServers: servers, iceTransportPolicy: 'relay', bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
+  }
+  // normal mode (default)
   const iceServers = fetchedIceServers || [
     { urls: 'stun:stun.relay.metered.ca:80' },
-    {
-      urls: [
-        'turns:global.relay.metered.ca:443',
-        'turn:global.relay.metered.ca:443',
-        'turn:global.relay.metered.ca:80?transport=tcp'
-      ],
-      username: TURN_USERNAME,
-      credential: TURN_CREDENTIAL
-    }
+    { urls: 'turn:global.relay.metered.ca:80', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+    { urls: 'turn:global.relay.metered.ca:443', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL }
   ];
   return { iceServers, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
 }
@@ -64,16 +78,18 @@ async function refreshTurnCredentials() {
   if (creds) fetchedIceServers = creds;
 }
 
-function renderIndexHtml() {
-  const configScript = `<script>window.__RTC_CONFIG = ${JSON.stringify(buildRtcConfig())};</script>`;
-  return fs.readFileSync(path.join(publicDir, 'index.html'), 'utf-8').replace('</head>', configScript + '</head>');
-}
-
 // Fetch credentials at startup, then refresh every 6 hours
 refreshTurnCredentials();
 setInterval(refreshTurnCredentials, 6 * 60 * 60 * 1000);
 
-app.get('/', (req, res) => res.type('html').send(renderIndexHtml()));
+app.get('/', async (req, res) => {
+  const freshCreds = await fetchTurnCredentials();
+  if (freshCreds) fetchedIceServers = freshCreds;
+  const configScript = `<script>window.__RTC_CONFIG = ${JSON.stringify(buildRtcConfig())};</script>`;
+  const html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf-8')
+    .replace('</head>', configScript + '</head>');
+  res.type('html').send(html);
+});
 app.use(express.static(publicDir));
 
 const loadCredentials = () => {
