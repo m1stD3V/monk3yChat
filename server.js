@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -6,23 +5,47 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
+
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 const io = new Server(server, {
-  cors: { origin: '*' },
+  cors: { origin: CORS_ORIGIN },
   pingTimeout: 60000,
   pingInterval: 25000
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ─── CREDENTIALS + ROLES ─────────────────────────────────
-// AUTH_CREDENTIALS format: "user:pass:role;user2:pass2:role2"
-// Roles: owner | admin | member (default)
+function debug(...args) {
+  if (process.env.DEBUG) console.log(...args);
+}
+
+app.get('/turn-credentials', (req, res) => {
+  const username = process.env.TURN_USERNAME;
+  const credential = process.env.TURN_CREDENTIAL;
+  if (!username || !credential) {
+    return res.json({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  }
+  res.json({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      {
+        urls: [
+          'turn:global.relay.metered.ca:80',
+          'turn:global.relay.metered.ca:443',
+          'turn:global.relay.metered.ca:443?transport=tcp'
+        ],
+        username,
+        credential
+      }
+    ],
+    bundlePolicy: 'max-bundle',
+    iceCandidatePoolSize: 10
+  });
+});
+
 const loadCredentials = () => {
   const authEnv = process.env.AUTH_CREDENTIALS;
-  if (!authEnv) {
-    console.warn('WARNING: AUTH_CREDENTIALS not set.');
-    return [];
-  }
+  if (!authEnv) return [];
   return authEnv.split(';').filter(line => line.includes(':')).map(line => {
     const parts = line.trim().split(':');
     return {
@@ -33,8 +56,6 @@ const loadCredentials = () => {
   });
 };
 
-// ─── SERVER DATABASE ─────────────────────────────────────
-// Deep-clone so runtime mutations don't affect the original definition
 const defaultServers = {
   'canopy-hub': {
     name: 'Canopy Hub 🌳',
@@ -48,15 +69,10 @@ const defaultServers = {
   }
 };
 
-// Runtime-mutable server list (admin actions modify this)
 let jungleServers = JSON.parse(JSON.stringify(defaultServers));
 
-// ─── PINNED MESSAGES (in-memory) ────────────────────────
-// pinnedMessages[serverId][channelId] = [...msgs]
 const pinnedMessages = {};
 
-// ─── MESSAGE CACHE (server-side, in-memory ring buffer) ──
-// Structure: cache[serverId][channelId] = [...msgs]
 const MSG_CACHE_MAX = 100;
 const msgCache = {};
 
@@ -80,11 +96,37 @@ function clearServerCache(serverId) {
   delete msgCache[serverId];
 }
 
-// ─── USER REGISTRY ───────────────────────────────────────
-// socketId → { serverId, channelId, internalRoomId, userName, role, token }
 const userRegistry = {};
-// token → { userName, role }
 const sessionRegistry = {};
+
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const RATE_LIMIT_WINDOW = 10000;
+const RATE_LIMIT_MAX = 20;
+const rateCounters = {};
+
+function checkRateLimit(socketId) {
+  const now = Date.now();
+  if (!rateCounters[socketId]) rateCounters[socketId] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW };
+  else {
+    if (now > rateCounters[socketId].resetAt) {
+      rateCounters[socketId] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW };
+    } else {
+      rateCounters[socketId].count++;
+      if (rateCounters[socketId].count > RATE_LIMIT_MAX) return false;
+    }
+  }
+  return true;
+}
+
+function isAdmin(socketId) {
+  const u = userRegistry[socketId];
+  return u && (u.role === 'admin' || u.role === 'owner');
+}
+
+function isOwner(socketId) {
+  const u = userRegistry[socketId];
+  return u && u.role === 'owner';
+}
 
 function broadcastUserList() {
   const users = Object.entries(userRegistry).map(([socketId, u]) => ({
@@ -96,21 +138,26 @@ function broadcastUserList() {
   io.emit('user-list-update', users);
 }
 
-// ─── SOCKET HANDLERS ─────────────────────────────────────
 io.on('connection', (socket) => {
-  console.log(`🐒 Connected: ${socket.id}`);
+  debug(`Connected: ${socket.id}`);
 
-  // ── Authentication
   socket.on('authenticate', ({ username, password, token }) => {
+    if (!checkRateLimit(socket.id)) return socket.emit('auth-result', { success: false, error: 'Rate limited' });
+
     let user;
     if (token && sessionRegistry[token]) {
-      user = { username: sessionRegistry[token].userName, role: sessionRegistry[token].role };
+      const session = sessionRegistry[token];
+      if (session.expiresAt && Date.now() > session.expiresAt) {
+        delete sessionRegistry[token];
+        return socket.emit('auth-result', { success: false, error: 'Session expired' });
+      }
+      user = { username: session.userName, role: session.role };
     } else {
       const creds = loadCredentials();
       user = creds.find(c => c.username === username && c.password === password);
       if (user) {
         token = Math.random().toString(36).substring(2) + Date.now().toString(36);
-        sessionRegistry[token] = { userName: user.username, role: user.role };
+        sessionRegistry[token] = { userName: user.username, role: user.role, expiresAt: Date.now() + SESSION_TTL_MS };
       }
     }
 
@@ -126,17 +173,20 @@ io.on('connection', (socket) => {
       socket.emit('auth-result', { success: true, role: user.role, token: token });
       socket.emit('init-discord-data', { servers: jungleServers });
       broadcastUserList();
-      console.log(`✅ Auth: ${user.username} (${user.role})`);
+      debug(`Auth: ${user.username} (${user.role})`);
     } else {
       socket.emit('auth-result', { success: false });
-      console.log(`❌ Auth failed: ${username || 'Token login'}`);
+      debug(`Auth failed: ${username || 'Token login'}`);
     }
   });
 
-  // ── Join voice
   socket.on('join-voice', ({ serverId, channelId }) => {
     const userData = userRegistry[socket.id];
     if (!userData) return;
+    if (!checkRateLimit(socket.id)) return;
+
+    const server = jungleServers[serverId];
+    if (!server || !server.voiceChannels[channelId]) return;
 
     leavePreviousVoice(socket);
 
@@ -156,36 +206,38 @@ io.on('connection', (socket) => {
     })));
 
     socket.to(roomId).emit('peer-joined-voice', { id: socket.id, name: userData.userName });
-    console.log(`🔊 ${userData.userName} joined voice: ${roomId}`);
+    debug(`${userData.userName} joined voice: ${roomId}`);
   });
 
-  // ── WebRTC signaling
   socket.on('webrtc-signal', ({ targetPeerId, signal }) => {
     if (!userRegistry[socket.id]) return;
+    if (!checkRateLimit(socket.id)) return;
     io.to(targetPeerId).emit('webrtc-signal', { senderPeerId: socket.id, signal });
   });
 
-  // ── Join text channel (and send history)
   socket.on('join-text', ({ serverId, channelId }) => {
     if (!userRegistry[socket.id]) return;
 
-    // Leave old text rooms
+    const server = jungleServers[serverId];
+    if (!server || !server.textChannels[channelId]) return;
+
     Array.from(socket.rooms).filter(r => r.startsWith('tx-')).forEach(r => socket.leave(r));
     socket.join(`tx-${serverId}-${channelId}`);
 
-    // Send cached message history to this client
     const history = getHistory(serverId, channelId);
     if (history.length > 0) {
       socket.emit('message-history', { serverId, channelId, messages: history });
     }
   });
 
-  // ── Text message
   socket.on('send-text-msg', ({ serverId, channelId, text }) => {
     const userData = userRegistry[socket.id];
     if (!userData) return;
+    if (!checkRateLimit(socket.id)) return;
 
-    // Sanitize text length
+    const server = jungleServers[serverId];
+    if (!server || !server.textChannels[channelId]) return;
+
     const safeText = String(text).substring(0, 2000);
 
     const msgObj = {
@@ -201,36 +253,39 @@ io.on('connection', (socket) => {
     io.to(`tx-${serverId}-${channelId}`).emit('receive-text-msg', msgObj);
   });
 
-  // ── Pinning
   socket.on('pin-message', ({ serverId, channelId, message }) => {
+    if (!isAdmin(socket.id)) return;
     if (!pinnedMessages[serverId]) pinnedMessages[serverId] = {};
     if (!pinnedMessages[serverId][channelId]) pinnedMessages[serverId][channelId] = [];
-    
-    // Check if already pinned
+
     if (pinnedMessages[serverId][channelId].some(m => m.id === message.id)) return;
-    
+
     pinnedMessages[serverId][channelId].push(message);
-    io.to(`tx-${serverId}-${channelId}`).emit('pinned-messages-update', { 
-      serverId, channelId, messages: pinnedMessages[serverId][channelId] 
+    io.to(`tx-${serverId}-${channelId}`).emit('pinned-messages-update', {
+      serverId, channelId, messages: pinnedMessages[serverId][channelId]
     });
   });
 
   socket.on('unpin-message', ({ serverId, channelId, messageId }) => {
+    if (!isAdmin(socket.id)) return;
     if (pinnedMessages[serverId]?.[channelId]) {
       pinnedMessages[serverId][channelId] = pinnedMessages[serverId][channelId].filter(m => m.id !== messageId);
-      io.to(`tx-${serverId}-${channelId}`).emit('pinned-messages-update', { 
-        serverId, channelId, messages: pinnedMessages[serverId][channelId] 
+      io.to(`tx-${serverId}-${channelId}`).emit('pinned-messages-update', {
+        serverId, channelId, messages: pinnedMessages[serverId][channelId]
       });
     }
   });
 
   socket.on('get-pinned-messages', ({ serverId, channelId }) => {
+    if (!userRegistry[socket.id]) return;
     const pins = pinnedMessages[serverId]?.[channelId] || [];
     socket.emit('pinned-messages-update', { serverId, channelId, messages: pins });
   });
 
-  // ── Server Management
   socket.on('create-server', ({ name }) => {
+    if (!userRegistry[socket.id]) return;
+    if (!checkRateLimit(socket.id)) return;
+
     const serverId = name.toLowerCase().replace(/[^a-z0-9]/g, '-').substring(0, 32) + '-' + Math.floor(Math.random() * 1000);
     const newServer = {
       name: name + ' 🏝️',
@@ -238,67 +293,48 @@ io.on('connection', (socket) => {
       voiceChannels: { lounge: '🔊 The Lounge' }
     };
     jungleServers[serverId] = newServer;
-    io.emit('server-created', { serverId, server: newServer });
-    // Re-emit init data to everyone to refresh guild bars
-    io.emit('init-discord-data', { servers: jungleServers });
+    socket.emit('server-created', { serverId, server: newServer });
+    socket.emit('init-discord-data', { servers: jungleServers });
   });
 
-  // ── User settings
   socket.on('update-user', ({ newName }) => {
-    if (userRegistry[socket.id]) {
-      const oldName = userRegistry[socket.id].userName;
-      userRegistry[socket.id].userName = newName;
-      broadcastUserList();
-      console.log(`👤 ${oldName} changed name to ${newName}`);
-    }
+    const userData = userRegistry[socket.id];
+    if (!userData) return;
+    if (!checkRateLimit(socket.id)) return;
+
+    const oldName = userData.userName;
+    userData.userName = newName;
+    broadcastUserList();
+    debug(`${oldName} changed name to ${newName}`);
   });
 
-  // ── Leave voice
   socket.on('leave-voice', () => leavePreviousVoice(socket));
 
-  // ─────────────────────────────────────────────────────────
-  // ── ADMIN ACTIONS
-  // ─────────────────────────────────────────────────────────
-
-  function isAdmin(socketId) {
-    const u = userRegistry[socketId];
-    return u && (u.role === 'admin' || u.role === 'owner');
-  }
-
-  function isOwner(socketId) {
-    const u = userRegistry[socketId];
-    return u && u.role === 'owner';
-  }
-
-  // Kick user from voice
   socket.on('admin-kick', ({ targetSocketId }) => {
     if (!isAdmin(socket.id)) return;
     const targetSocket = io.sockets.sockets.get(targetSocketId);
     if (targetSocket) {
       leavePreviousVoice(targetSocket);
       targetSocket.emit('admin-kicked');
-      console.log(`🚫 ${userRegistry[socket.id]?.userName} kicked ${userRegistry[targetSocketId]?.userName}`);
+      debug(`${userRegistry[socket.id]?.userName} kicked ${userRegistry[targetSocketId]?.userName}`);
     }
   });
 
-  // Promote user to admin
   socket.on('admin-promote', ({ targetSocketId }) => {
     if (!isOwner(socket.id)) return;
     if (userRegistry[targetSocketId]) {
       userRegistry[targetSocketId].role = 'admin';
       io.to(targetSocketId).emit('role-updated', { socketId: targetSocketId, newRole: 'admin' });
       broadcastUserList();
-      console.log(`⬆️ ${userRegistry[targetSocketId].userName} promoted to admin`);
+      debug(`${userRegistry[targetSocketId].userName} promoted to admin`);
     }
   });
 
-  // Add channel
   socket.on('admin-add-channel', ({ serverId, channelName, channelType }) => {
     if (!isAdmin(socket.id)) return;
     const server = jungleServers[serverId];
     if (!server) return;
 
-    // Sanitize
     const safeName = channelName.toLowerCase().replace(/[^a-z0-9-]/g, '').substring(0, 32);
     if (!safeName) return;
 
@@ -309,10 +345,9 @@ io.on('connection', (socket) => {
     }
 
     io.emit('channels-updated', { serverId, server });
-    console.log(`➕ Channel added: ${channelType}/${safeName} in ${serverId}`);
+    debug(`Channel added: ${channelType}/${safeName} in ${serverId}`);
   });
 
-  // Delete channel
   socket.on('admin-delete-channel', ({ serverId, channelId, channelType }) => {
     if (!isOwner(socket.id)) return;
     const server = jungleServers[serverId];
@@ -326,29 +361,24 @@ io.on('connection', (socket) => {
     }
 
     io.emit('channels-updated', { serverId, server });
-    console.log(`🗑️ Channel deleted: ${channelType}/${channelId} in ${serverId}`);
+    debug(`Channel deleted: ${channelType}/${channelId} in ${serverId}`);
   });
 
-  // Clear message cache (admin)
   socket.on('admin-clear-cache', ({ serverId, channelId }) => {
     if (!isAdmin(socket.id)) return;
     if (channelId) clearChannelCache(serverId, channelId);
     else clearServerCache(serverId);
-    console.log(`🗑️ Cache cleared: ${serverId}/${channelId || '*'}`);
+    debug(`Cache cleared: ${serverId}/${channelId || '*'}`);
   });
 
-  // ─────────────────────────────────────────────────────────
-
-  // ── Disconnect
   socket.on('disconnect', () => {
     leavePreviousVoice(socket);
     delete userRegistry[socket.id];
     broadcastUserList();
-    console.log(`🐒 Disconnected: ${socket.id}`);
+    debug(`Disconnected: ${socket.id}`);
   });
 });
 
-// ─── LEAVE VOICE HELPER ──────────────────────────────────
 function leavePreviousVoice(socket) {
   const userData = userRegistry[socket.id];
   if (userData?.internalRoomId) {
@@ -359,9 +389,13 @@ function leavePreviousVoice(socket) {
   }
 }
 
-// ─── START ───────────────────────────────────────────────
+if (!process.env.AUTH_CREDENTIALS) {
+  console.error('FATAL: AUTH_CREDENTIALS environment variable is not set. Server will not start.');
+  process.exit(1);
+}
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🍌 monkey.chat running on :${PORT}`));
+server.listen(PORT, () => console.log(`monkey.chat running on :${PORT}`));
 
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 process.on('SIGINT',  () => server.close(() => process.exit(0)));

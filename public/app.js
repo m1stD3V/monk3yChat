@@ -1,5 +1,9 @@
 // public/app.js
 
+function debug(...args) {
+  if (localStorage.getItem('debug')) console.log(...args);
+}
+
 const socket = io({ transports: ['websocket'], upgrade: false });
 
 // ─── CONSTANTS ───────────────────────────────────────────
@@ -12,22 +16,18 @@ const MSG_CACHE_KEY = 'mc_msg_cache';
 const MAX_CACHED_MSGS = 100; // per channel
 const MSG_GROUP_THRESHOLD = 5 * 60 * 1000; // 5 minutes → new group header
 
-const rtcConfig = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    {
-      urls: [
-        'turn:global.relay.metered.ca:80',
-        'turn:global.relay.metered.ca:443',
-        'turn:global.relay.metered.ca:443?transport=tcp'
-      ],
-      username: '3668af38c652028b1a39b682',
-      credential: 'TdkzU0crNP4oPMm1'
-    }
-  ],
+let rtcConfig = {
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   bundlePolicy: 'max-bundle',
   iceCandidatePoolSize: 10
 };
+
+(async () => {
+  try {
+    const res = await fetch('/turn-credentials');
+    if (res.ok) rtcConfig = await res.json();
+  } catch (e) { /* use default STUN */ }
+})();
 
 // ─── STATE ───────────────────────────────────────────────
 let localStream = null;
@@ -39,6 +39,7 @@ let currentTextChannelId = null;
 let currentVoiceChannelId = null;
 let myName = '';
 let myRole = 'member'; // 'member' | 'admin' | 'owner'
+let screenStream = null;
 let onlineUsers = {};  // socketId → { name, role }
 let pinnedMessages = []; // current channel pins
 let membersSidebarOpen = false;
@@ -57,6 +58,7 @@ const videoArenaEmpty       = document.getElementById('videoArenaEmpty');
 const msgFeed               = document.getElementById('msgFeed');
 const textInput             = document.getElementById('textInput');
 const sendBtn               = document.getElementById('sendBtn');
+const toggleShare           = document.getElementById('toggleShare');
 const voiceDock             = document.getElementById('voiceDock');
 const dockChannelName       = document.getElementById('dockChannelName');
 const loginOverlay          = document.getElementById('loginOverlay');
@@ -301,7 +303,7 @@ socket.on('auth-result', ({ success, role, token }) => {
       adminPanelBtn.style.display = 'flex';
     }
     showToast(`Welcome back, ${myName}!`, '🐒');
-    console.log(`[Auth] Logged in as ${myName} (${myRole})`);
+    debug(`[Auth] Logged in as ${myName} (${myRole})`);
   } else {
     sessionStorage.removeItem('mc_token');
     loginOverlay.style.display = 'flex';
@@ -312,11 +314,12 @@ socket.on('auth-result', ({ success, role, token }) => {
 });
 
 // ─── AUTOPLAY UNBLOCK ────────────────────────────────────
-document.body.addEventListener('click', () => {
+function unblockAutoplay() {
   document.querySelectorAll('video').forEach(v => {
     if (v.srcObject && v.id !== 'video-box-local') v.play().catch(() => {});
   });
-}, { once: false });
+}
+document.body.addEventListener('click', unblockAutoplay, { once: true });
 
 // ─── MESSAGE CACHE (localStorage) ───────────────────────
 function getCacheKey(serverId, channelId) {
@@ -587,8 +590,7 @@ socket.on('receive-text-msg', (msgData) => {
   // Notify if someone else sends a message while focused on another tab
   if (document.hidden && Notification.permission === 'granted') {
     new Notification(`monkey.chat — #${currentTextChannelId}`, {
-      body: `${userName}: ${text.substring(0, 80)}`,
-      icon: '/favicon.ico'
+      body: `${userName}: ${text.substring(0, 80)}`
     });
   }
 });
@@ -640,7 +642,7 @@ async function joinVoiceChannel(channelId) {
 }
 
 socket.on('current-room-monkeys', (users) => {
-  console.log(`[WebRTC] Found ${users.length} existing monkeys in room`);
+  debug(`[WebRTC] Found ${users.length} existing monkeys in room`);
   setTimeout(() => {
     users.forEach((user, idx) => {
       // Stagger initiation to avoid signaling flood
@@ -660,7 +662,7 @@ socket.on('peer-joined-voice', ({ id, name }) => {
 async function initiatePeerConnection(peerId, peerName) {
   if (peerConnections[peerId]) return;
 
-  console.log(`[WebRTC] Initiating connection to ${peerName} (${peerId})`);
+  debug(`[WebRTC] Initiating connection to ${peerName} (${peerId})`);
   const pc = new RTCPeerConnection(rtcConfig);
   const isPolite = socket.id > peerId;
 
@@ -678,30 +680,30 @@ async function initiatePeerConnection(peerId, peerName) {
 
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
-      console.log(`[WebRTC] Local candidate gathered for ${peerName}: ${candidate.type || 'unknown'} (${candidate.protocol})`);
+      debug(`[WebRTC] Local candidate gathered for ${peerName}: ${candidate.type || 'unknown'} (${candidate.protocol})`);
       socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate } });
     } else {
-      console.log(`[WebRTC] ICE candidate gathering complete for ${peerName}`);
+      debug(`[WebRTC] ICE candidate gathering complete for ${peerName}`);
     }
   };
 
   pc.onconnectionstatechange = () => {
-    console.log(`[WebRTC] ${peerName} connection state: ${pc.connectionState}`);
+    debug(`[WebRTC] ${peerName} connection state: ${pc.connectionState}`);
     if (pc.connectionState === 'failed') {
       handleConnectionFailure(peerId, peerName);
     }
   };
 
   pc.oniceconnectionstatechange = () => {
-    console.log(`[WebRTC] ${peerName} ICE state: ${pc.iceConnectionState}`);
+    debug(`[WebRTC] ${peerName} ICE state: ${pc.iceConnectionState}`);
     if (pc.iceConnectionState === 'failed') {
-      console.log(`[WebRTC] ICE failed for ${peerName}, restarting...`);
+      debug(`[WebRTC] ICE failed for ${peerName}, restarting...`);
       pc.restartIce();
     }
   };
 
   pc.ontrack = (event) => {
-    console.log(`[WebRTC] Received track from ${peerName}: ${event.track.kind}`);
+    debug(`[WebRTC] Received track from ${peerName}: ${event.track.kind}`);
     event.streams[0]?.getTracks().forEach(track => remoteStreams[peerId].addTrack(track));
     addVideoNode(peerId, peerName, remoteStreams[peerId]);
   };
@@ -711,7 +713,7 @@ async function initiatePeerConnection(peerId, peerName) {
     if (negotiationInProgress) return;
     try {
       negotiationInProgress = true;
-      console.log(`[WebRTC] Negotiation needed for ${peerName}`);
+      debug(`[WebRTC] Negotiation needed for ${peerName}`);
       peerConnections[peerId].makingOffer = true;
       await pc.setLocalDescription();
       applyBitrateLimits(pc);
@@ -747,7 +749,7 @@ function handleConnectionFailure(peerId, peerName) {
 
   // If ICE is already trying to recover, don't hard-reset yet
   if (conn.pc.iceConnectionState === 'checking' || conn.pc.iceConnectionState === 'new') {
-    console.log(`[WebRTC] ${peerName} connection failed, but ICE is recovering (${conn.pc.iceConnectionState}), waiting...`);
+    debug(`[WebRTC] ${peerName} connection failed, but ICE is recovering (${conn.pc.iceConnectionState}), waiting...`);
     return;
   }
 
@@ -758,7 +760,7 @@ function handleConnectionFailure(peerId, peerName) {
 
   conn.retryCount++;
   showToast(`Retrying connection with ${peerName} (${conn.retryCount}/3)...`, '🔄');
-  console.log(`[WebRTC] Retrying connection with ${peerName}, attempt ${conn.retryCount}`);
+  debug(`[WebRTC] Retrying connection with ${peerName}, attempt ${conn.retryCount}`);
   
   // Clean up and restart
   const oldPc = conn.pc;
@@ -771,7 +773,7 @@ function handleConnectionFailure(peerId, peerName) {
 socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
   if (!peerConnections[senderPeerId]) {
     const peerName = onlineUsers[senderPeerId]?.name || 'Monkey';
-    console.log(`[WebRTC] Received signal from unknown peer ${senderPeerId}, initiating...`);
+    debug(`[WebRTC] Received signal from unknown peer ${senderPeerId}, initiating...`);
     await initiatePeerConnection(senderPeerId, peerName);
   }
 
@@ -783,13 +785,13 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
 
   try {
     if (signal.sdp) {
-      console.log(`[WebRTC] Received ${signal.sdp.type} from ${peerName}`);
+      debug(`[WebRTC] Received ${signal.sdp.type} from ${peerName}`);
       const offerCollision = (signal.sdp.type === 'offer') &&
                              (conn.makingOffer || pc.signalingState !== 'stable');
 
       conn.ignoreOffer = !conn.isPolite && offerCollision;
       if (conn.ignoreOffer) {
-        console.log(`[WebRTC] Ignoring offer collision from ${peerName}`);
+        debug(`[WebRTC] Ignoring offer collision from ${peerName}`);
         return;
       }
 
@@ -816,12 +818,12 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
         }
       }
     } else if (signal.candidate) {
-      console.log(`[WebRTC] Received remote candidate from ${peerName}: ${signal.candidate.type || 'unknown'}`);
+      debug(`[WebRTC] Received remote candidate from ${peerName}: ${signal.candidate.type || 'unknown'}`);
       try {
         if (pc.remoteDescription && !conn.isSettingRemoteDescriptionPending) {
           await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
         } else {
-          console.log(`[WebRTC] Buffering remote candidate from ${peerName} (desc pending or null)`);
+          debug(`[WebRTC] Buffering remote candidate from ${peerName} (desc pending or null)`);
           conn.iceBuffer.push(new RTCIceCandidate(signal.candidate));
         }
       } catch (err) {
@@ -924,6 +926,8 @@ function cleanUpVoice(resetUI = true) {
   remoteStreams = {};
   localStream?.getTracks().forEach(t => t.stop());
   localStream = null;
+  screenStream?.getTracks().forEach(t => t.stop());
+  screenStream = null;
 
   if (resetUI) {
     videoGrid.innerHTML = '';
@@ -974,6 +978,73 @@ document.getElementById('toggleVid').addEventListener('click', () => {
     box.querySelector('.no-video-placeholder').style.display = track.enabled ? 'none' : 'flex';
   }
 });
+
+toggleShare.addEventListener('click', async () => {
+  if (screenStream) {
+    stopScreenShare();
+  } else {
+    startScreenShare();
+  }
+});
+
+async function startScreenShare() {
+  if (!localStream) return;
+  try {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    const screenTrack = screenStream.getVideoTracks()[0];
+
+    // Replace tracks for all active peers
+    Object.values(peerConnections).forEach(({ pc }) => {
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (sender) sender.replaceTrack(screenTrack);
+    });
+
+    // Update local preview
+    const localVideo = document.querySelector('#video-box-local video');
+    if (localVideo) {
+      localVideo.srcObject = screenStream;
+      localVideo.style.display = 'block';
+      const placeholder = document.querySelector('#video-box-local .no-video-placeholder');
+      if (placeholder) placeholder.style.display = 'none';
+    }
+
+    toggleShare.classList.add('muted');
+    toggleShare.textContent = '🛑';
+    
+    screenTrack.onended = () => stopScreenShare();
+    showToast('Screen sharing started', '🖥️');
+  } catch (err) {
+    console.error('[ScreenShare] Error:', err);
+    showToast('Failed to share screen', '❌');
+  }
+}
+
+async function stopScreenShare() {
+  if (!screenStream) return;
+  screenStream.getTracks().forEach(t => t.stop());
+  screenStream = null;
+
+  const cameraTrack = localStream?.getVideoTracks()[0];
+  if (cameraTrack) {
+    Object.values(peerConnections).forEach(({ pc }) => {
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (sender) sender.replaceTrack(cameraTrack);
+    });
+
+    // Restore local preview
+    const localVideo = document.querySelector('#video-box-local video');
+    if (localVideo) {
+      localVideo.srcObject = localStream;
+      localVideo.style.display = cameraTrack.enabled ? 'block' : 'none';
+      const placeholder = document.querySelector('#video-box-local .no-video-placeholder');
+      if (placeholder) placeholder.style.display = cameraTrack.enabled ? 'none' : 'flex';
+    }
+  }
+
+  toggleShare.classList.remove('muted');
+  toggleShare.textContent = '🖥️';
+  showToast('Screen sharing stopped', '🖥️');
+}
 
 // ─── INIT SERVER LIST POPULATE ───────────────────────────
 function buildServerUI(servers) {

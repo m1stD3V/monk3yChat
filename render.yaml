@@ -8,3 +8,11 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 18.0.0
+      - key: AUTH_CREDENTIALS
+        sync: false
+      - key: TURN_USERNAME
+        sync: false
+      - key: TURN_CREDENTIAL
+        sync: false
+      - key: CORS_ORIGIN
+        value: https://monk3ychat.onrender.com

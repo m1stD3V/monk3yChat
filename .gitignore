@@ -3,6 +3,7 @@ node_modules/
 jspm_packages/
 
 # Local configuration files / API keys / secrets
+credentials.txt
 .env
 .env.local
 .env.development.local

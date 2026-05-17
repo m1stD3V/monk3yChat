@@ -1,7 +1,7 @@
-const process = { env: { AUTH_CREDENTIALS: "user1:pass1;user2:pass2" } };
+const mockEnv = { AUTH_CREDENTIALS: "user1:pass1;user2:pass2" };
 // Copy of the logic from server.js
 const loadCredentials = () => {
-    const authEnv = process.env.AUTH_CREDENTIALS;
+    const authEnv = mockEnv.AUTH_CREDENTIALS;
     return authEnv.split(';').filter(line => line.includes(':')).map(line => {
         const [username, password] = line.split(':');
         return { username: username.trim(), password: password.trim() };
