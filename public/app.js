@@ -19,15 +19,14 @@ const rtcConfig = {
       urls: [
         'turn:global.relay.metered.ca:80',
         'turn:global.relay.metered.ca:443',
-        'turn:global.relay.metered.ca:443?transport=tcp',
-        'turns:global.relay.metered.ca:443?transport=tcp'
+        'turn:global.relay.metered.ca:443?transport=tcp'
       ],
       username: '3668af38c652028b1a39b682',
       credential: 'TdkzU0crNP4oPMm1'
     }
   ],
-  bundlePolicy: 'balanced',
-  iceCandidatePoolSize: 0
+  bundlePolicy: 'max-bundle',
+  iceCandidatePoolSize: 10
 };
 
 // ─── STATE ───────────────────────────────────────────────
@@ -670,7 +669,7 @@ async function initiatePeerConnection(peerId, peerName) {
     makingOffer: false,
     ignoreOffer: false,
     isPolite,
-    isSettingRemoteAnswerPending: false,
+    isSettingRemoteDescriptionPending: false,
     retryCount: 0
   };
 
@@ -678,7 +677,7 @@ async function initiatePeerConnection(peerId, peerName) {
 
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
-      console.log(`[WebRTC] Local candidate gathered for ${peerName}: ${candidate.type} (${candidate.protocol})`);
+      console.log(`[WebRTC] Local candidate gathered for ${peerName}: ${candidate.type || 'unknown'} (${candidate.protocol})`);
       socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate } });
     } else {
       console.log(`[WebRTC] ICE candidate gathering complete for ${peerName}`);
@@ -695,6 +694,7 @@ async function initiatePeerConnection(peerId, peerName) {
   pc.oniceconnectionstatechange = () => {
     console.log(`[WebRTC] ${peerName} ICE state: ${pc.iceConnectionState}`);
     if (pc.iceConnectionState === 'failed') {
+      console.log(`[WebRTC] ICE failed for ${peerName}, restarting...`);
       pc.restartIce();
     }
   };
@@ -742,7 +742,15 @@ function applyBitrateLimits(pc) {
 
 function handleConnectionFailure(peerId, peerName) {
   const conn = peerConnections[peerId];
-  if (!conn || conn.retryCount >= 3) {
+  if (!conn) return;
+
+  // If ICE is already trying to recover, don't hard-reset yet
+  if (conn.pc.iceConnectionState === 'checking' || conn.pc.iceConnectionState === 'new') {
+    console.log(`[WebRTC] ${peerName} connection failed, but ICE is recovering (${conn.pc.iceConnectionState}), waiting...`);
+    return;
+  }
+
+  if (conn.retryCount >= 3) {
     showToast(`Connection with ${peerName} failed permanently`, '❌');
     return;
   }
@@ -784,10 +792,12 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
         return;
       }
 
-      const isSettingRemoteAnswerPending = signal.sdp.type === 'answer';
-      conn.isSettingRemoteAnswerPending = isSettingRemoteAnswerPending;
-      await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-      conn.isSettingRemoteAnswerPending = false;
+      conn.isSettingRemoteDescriptionPending = true;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      } finally {
+        conn.isSettingRemoteDescriptionPending = false;
+      }
 
       if (signal.sdp.type === 'offer') {
         await pc.setLocalDescription();
@@ -807,10 +817,10 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
     } else if (signal.candidate) {
       console.log(`[WebRTC] Received remote candidate from ${peerName}: ${signal.candidate.type || 'unknown'}`);
       try {
-        if (pc.remoteDescription && !conn.isSettingRemoteAnswerPending) {
+        if (pc.remoteDescription && !conn.isSettingRemoteDescriptionPending) {
           await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
         } else {
-          console.log(`[WebRTC] Buffering remote candidate from ${peerName} (remote description not set yet)`);
+          console.log(`[WebRTC] Buffering remote candidate from ${peerName} (desc pending or null)`);
           conn.iceBuffer.push(new RTCIceCandidate(signal.candidate));
         }
       } catch (err) {
