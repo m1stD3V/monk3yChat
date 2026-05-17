@@ -15,30 +15,19 @@ const MSG_GROUP_THRESHOLD = 5 * 60 * 1000; // 5 minutes → new group header
 const rtcConfig = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun.relay.metered.ca:80' },
     {
-      urls: 'turn:global.relay.metered.ca:80',
-      username: '3668af38c652028b1a39b682',
-      credential: 'TdkzU0crNP4oPMm1'
-    },
-    {
-      urls: 'turn:global.relay.metered.ca:443',
-      username: '3668af38c652028b1a39b682',
-      credential: 'TdkzU0crNP4oPMm1'
-    },
-    {
-      urls: 'turn:global.relay.metered.ca:443?transport=tcp',
-      username: '3668af38c652028b1a39b682',
-      credential: 'TdkzU0crNP4oPMm1'
-    },
-    {
-      urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+      urls: [
+        'turn:global.relay.metered.ca:80',
+        'turn:global.relay.metered.ca:443',
+        'turn:global.relay.metered.ca:443?transport=tcp',
+        'turns:global.relay.metered.ca:443?transport=tcp'
+      ],
       username: '3668af38c652028b1a39b682',
       credential: 'TdkzU0crNP4oPMm1'
     }
   ],
-  bundlePolicy: 'max-bundle',
-  iceCandidatePoolSize: 10
+  bundlePolicy: 'balanced',
+  iceCandidatePoolSize: 0
 };
 
 // ─── STATE ───────────────────────────────────────────────
@@ -688,7 +677,12 @@ async function initiatePeerConnection(peerId, peerName) {
   remoteStreams[peerId] = new MediaStream();
 
   pc.onicecandidate = ({ candidate }) => {
-    socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate } });
+    if (candidate) {
+      console.log(`[WebRTC] Local candidate gathered for ${peerName}: ${candidate.type} (${candidate.protocol})`);
+      socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate } });
+    } else {
+      console.log(`[WebRTC] ICE candidate gathering complete for ${peerName}`);
+    }
   };
 
   pc.onconnectionstatechange = () => {
@@ -768,6 +762,7 @@ function handleConnectionFailure(peerId, peerName) {
 socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
   if (!peerConnections[senderPeerId]) {
     const peerName = onlineUsers[senderPeerId]?.name || 'Monkey';
+    console.log(`[WebRTC] Received signal from unknown peer ${senderPeerId}, initiating...`);
     await initiatePeerConnection(senderPeerId, peerName);
   }
 
@@ -779,6 +774,7 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
 
   try {
     if (signal.sdp) {
+      console.log(`[WebRTC] Received ${signal.sdp.type} from ${peerName}`);
       const offerCollision = (signal.sdp.type === 'offer') &&
                              (conn.makingOffer || pc.signalingState !== 'stable');
 
@@ -802,13 +798,19 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
       // Flush buffered ICE candidates
       while (conn.iceBuffer.length > 0) {
         const cand = conn.iceBuffer.shift();
-        try { await pc.addIceCandidate(cand); } catch (e) { console.warn(`[WebRTC] Buffered ICE error:`, e); }
+        try { 
+          await pc.addIceCandidate(cand); 
+        } catch (e) { 
+          console.warn(`[WebRTC] Buffered ICE error for ${peerName}:`, e); 
+        }
       }
     } else if (signal.candidate) {
+      console.log(`[WebRTC] Received remote candidate from ${peerName}: ${signal.candidate.type || 'unknown'}`);
       try {
         if (pc.remoteDescription && !conn.isSettingRemoteAnswerPending) {
           await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
         } else {
+          console.log(`[WebRTC] Buffering remote candidate from ${peerName} (remote description not set yet)`);
           conn.iceBuffer.push(new RTCIceCandidate(signal.candidate));
         }
       } catch (err) {
