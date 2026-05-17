@@ -22,8 +22,8 @@ function debug(...args) {
 }
 
 function getRtcConfig() {
-  const username = process.env.TURN_USERNAME || '3668af38c652028b1a39b682';
-  const credential = process.env.TURN_CREDENTIAL || 'TdkzU0crNP4oPMm1';
+  const username = process.env.TURN_USERNAME || '4f896608fcb95956035370ff';
+  const credential = process.env.TURN_CREDENTIAL || 'fsReP4d/VohYU6Ei';
   return {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
