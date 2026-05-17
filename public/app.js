@@ -636,12 +636,14 @@ async function joinVoiceChannel(channelId) {
 
 socket.on('current-room-monkeys', (users) => {
   debug(`[WebRTC] Found ${users.length} existing monkeys in room`);
-  setTimeout(() => {
-    users.forEach((user, idx) => {
-      // Stagger initiation to avoid signaling flood
-      setTimeout(() => initiatePeerConnection(user.id, user.name), idx * 300);
-    });
-  }, 100);
+  // Do NOT initiate — existing peers will offer to us
+  // Just pre-register so incoming signals are handled
+  users.forEach((user) => {
+    const peerName = onlineUsers[user.id]?.name || user.name || 'Monkey';
+    if (!peerConnections[user.id]) {
+      initiatePeerConnection(user.id, peerName, false);
+    }
+  });
 });
 
 socket.on('peer-joined-voice', ({ id, name }) => {
@@ -652,7 +654,7 @@ socket.on('peer-joined-voice', ({ id, name }) => {
   updateVCUserCount();
 });
 
-async function initiatePeerConnection(peerId, peerName) {
+async function initiatePeerConnection(peerId, peerName, shouldOffer = true) {
   if (peerConnections[peerId]) return;
 
   debug(`[WebRTC] Initiating connection to ${peerName} (${peerId})`);
@@ -666,7 +668,8 @@ async function initiatePeerConnection(peerId, peerName) {
     ignoreOffer: false,
     isPolite,
     isSettingRemoteDescriptionPending: false,
-    retryCount: 0
+    retryCount: 0,
+    suppressNegotiation: false
   };
 
   remoteStreams[peerId] = new MediaStream();
@@ -707,6 +710,10 @@ async function initiatePeerConnection(peerId, peerName) {
   let negotiationInProgress = false;
   pc.onnegotiationneeded = async () => {
     if (negotiationInProgress) return;
+    if (peerConnections[peerId]?.suppressNegotiation) {
+      debug(`[WebRTC] Suppressed negotiation for ${peerName} — waiting for remote offer`);
+      return;
+    }
     try {
       negotiationInProgress = true;
       debug(`[WebRTC] Negotiation needed for ${peerName}`);
@@ -723,7 +730,15 @@ async function initiatePeerConnection(peerId, peerName) {
   };
 
   if (localStream) {
-    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    if (shouldOffer) {
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    } else {
+      // Add tracks silently — wait for the remote offer first
+      // Suppress the automatic negotiation that addTrack triggers
+      peerConnections[peerId].suppressNegotiation = true;
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      peerConnections[peerId].suppressNegotiation = false;
+    }
   }
 }
 
@@ -782,6 +797,9 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
   try {
     if (signal.sdp) {
       debug(`[WebRTC] Received ${signal.sdp.type} from ${peerName}`);
+      if (signal.sdp.type === 'offer' && conn.ignoreOffer) {
+        console.warn(`[WebRTC] DROPPED OFFER from ${peerName} — collision ignored`);
+      }
       const offerCollision = (signal.sdp.type === 'offer') &&
                              (conn.makingOffer || pc.signalingState !== 'stable');
 
