@@ -734,6 +734,18 @@ async function initiatePeerConnection(peerId, peerName) {
   }
 }
 
+function applyBitrateLimits(pc) {
+  pc.getSenders().forEach(sender => {
+    if (sender.track && sender.track.kind === 'video') {
+      const parameters = sender.getParameters();
+      if (parameters.encodings && parameters.encodings.length > 0) {
+        parameters.encodings[0].maxBitrate = MAX_VIDEO_BITRATE;
+        sender.setParameters(parameters).catch(e => console.error('[WebRTC] Bitrate limit error:', e));
+      }
+    }
+  });
+}
+
 function handleConnectionFailure(peerId, peerName) {
   const conn = peerConnections[peerId];
   if (!conn || conn.retryCount >= 3) {
