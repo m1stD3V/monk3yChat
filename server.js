@@ -26,12 +26,13 @@ function getRtcConfig() {
   const credential = process.env.TURN_CREDENTIAL || 'fsReP4d/VohYU6Ei';
   return {
     iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun.relay.metered.ca:80' },
       {
         urls: [
           'turn:global.relay.metered.ca:80',
+          'turn:global.relay.metered.ca:80?transport=tcp',
           'turn:global.relay.metered.ca:443',
-          'turn:global.relay.metered.ca:443?transport=tcp'
+          'turns:global.relay.metered.ca:443?transport=tcp'
         ],
         username,
         credential
