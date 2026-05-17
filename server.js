@@ -22,11 +22,8 @@ function debug(...args) {
 }
 
 function getRtcConfig() {
-  const username = process.env.TURN_USERNAME;
-  const credential = process.env.TURN_CREDENTIAL;
-  if (!username || !credential) {
-    return { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }], bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
-  }
+  const username = process.env.TURN_USERNAME || '3668af38c652028b1a39b682';
+  const credential = process.env.TURN_CREDENTIAL || 'TdkzU0crNP4oPMm1';
   return {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
