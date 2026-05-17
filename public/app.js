@@ -590,6 +590,7 @@ socket.on('receive-text-msg', (msgData) => {
 
 // ─── ONLINE USER TRACKING ────────────────────────────────
 socket.on('user-list-update', (users) => {
+  if (!Array.isArray(users)) return;
   onlineUsers = {};
   users.forEach(u => { onlineUsers[u.socketId] = u; });
   renderAdminUserList();
@@ -635,6 +636,7 @@ async function joinVoiceChannel(channelId) {
 }
 
 socket.on('current-room-monkeys', (users) => {
+  if (!Array.isArray(users)) return;
   debug(`[WebRTC] Found ${users.length} existing monkeys in room`);
   // Do NOT initiate — existing peers will offer to us
   // Just pre-register so incoming signals are handled
