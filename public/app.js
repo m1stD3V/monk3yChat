@@ -689,10 +689,16 @@ async function initiatePeerConnection(peerId, peerName) {
     console.log(`[WebRTC] ${peerName} connection state: ${pc.connectionState}`);
     if (pc.connectionState === 'failed') {
       showToast(`Connection with ${peerName} failed`, '⚠️');
+      // Potential auto-restart logic could go here
     }
   };
 
+  pc.oniceconnectionstatechange = () => {
+    console.log(`[WebRTC] ${peerName} ICE state: ${pc.iceConnectionState}`);
+  };
+
   pc.ontrack = (event) => {
+    console.log(`[WebRTC] Received track from ${peerName}: ${event.track.kind}`);
     event.streams[0]?.getTracks().forEach(track => remoteStreams[peerId].addTrack(track));
     addVideoNode(peerId, peerName, remoteStreams[peerId]);
   };
@@ -702,6 +708,7 @@ async function initiatePeerConnection(peerId, peerName) {
     if (negotiationInProgress) return;
     try {
       negotiationInProgress = true;
+      console.log(`[WebRTC] Negotiation needed for ${peerName}`);
       peerConnections[peerId].makingOffer = true;
       await pc.setLocalDescription();
       applyBitrateLimits(pc);
@@ -731,6 +738,12 @@ function applyBitrateLimits(pc) {
 }
 
 socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
+  if (!peerConnections[senderPeerId]) {
+    console.log(`[WebRTC] Signal received from unknown peer ${senderPeerId}, initiating...`);
+    const peerName = onlineUsers[senderPeerId]?.name || 'Monkey';
+    await initiatePeerConnection(senderPeerId, peerName);
+  }
+
   const conn = peerConnections[senderPeerId];
   if (!conn) return;
 
