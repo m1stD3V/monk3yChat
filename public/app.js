@@ -651,8 +651,12 @@ async function joinVoiceChannel(channelId) {
 }
 
 socket.on('current-room-monkeys', (users) => {
+  console.log(`[WebRTC] Found ${users.length} existing monkeys in room`);
   setTimeout(() => {
-    users.forEach(user => initiatePeerConnection(user.id, user.name));
+    users.forEach((user, idx) => {
+      // Stagger initiation to avoid signaling flood
+      setTimeout(() => initiatePeerConnection(user.id, user.name), idx * 300);
+    });
   }, 100);
 });
 
@@ -667,6 +671,7 @@ socket.on('peer-joined-voice', ({ id, name }) => {
 async function initiatePeerConnection(peerId, peerName) {
   if (peerConnections[peerId]) return;
 
+  console.log(`[WebRTC] Initiating connection to ${peerName} (${peerId})`);
   const pc = new RTCPeerConnection(rtcConfig);
   const isPolite = socket.id > peerId;
 
@@ -676,25 +681,28 @@ async function initiatePeerConnection(peerId, peerName) {
     makingOffer: false,
     ignoreOffer: false,
     isPolite,
-    isSettingRemoteAnswerPending: false
+    isSettingRemoteAnswerPending: false,
+    retryCount: 0
   };
 
   remoteStreams[peerId] = new MediaStream();
 
   pc.onicecandidate = ({ candidate }) => {
-    if (candidate) socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate } });
+    socket.emit('webrtc-signal', { targetPeerId: peerId, signal: { candidate } });
   };
 
   pc.onconnectionstatechange = () => {
     console.log(`[WebRTC] ${peerName} connection state: ${pc.connectionState}`);
     if (pc.connectionState === 'failed') {
-      showToast(`Connection with ${peerName} failed`, '⚠️');
-      // Potential auto-restart logic could go here
+      handleConnectionFailure(peerId, peerName);
     }
   };
 
   pc.oniceconnectionstatechange = () => {
     console.log(`[WebRTC] ${peerName} ICE state: ${pc.iceConnectionState}`);
+    if (pc.iceConnectionState === 'failed') {
+      pc.restartIce();
+    }
   };
 
   pc.ontrack = (event) => {
@@ -726,20 +734,27 @@ async function initiatePeerConnection(peerId, peerName) {
   }
 }
 
-function applyBitrateLimits(pc) {
-  pc.getSenders().forEach(sender => {
-    if (sender.track?.kind === 'video') {
-      const params = sender.getParameters();
-      if (!params.encodings) params.encodings = [{}];
-      params.encodings[0].maxBitrate = MAX_VIDEO_BITRATE;
-      sender.setParameters(params).catch(e => console.error('Bitrate limit failed:', e));
-    }
-  });
+function handleConnectionFailure(peerId, peerName) {
+  const conn = peerConnections[peerId];
+  if (!conn || conn.retryCount >= 3) {
+    showToast(`Connection with ${peerName} failed permanently`, '❌');
+    return;
+  }
+
+  conn.retryCount++;
+  showToast(`Retrying connection with ${peerName} (${conn.retryCount}/3)...`, '🔄');
+  console.log(`[WebRTC] Retrying connection with ${peerName}, attempt ${conn.retryCount}`);
+  
+  // Clean up and restart
+  const oldPc = conn.pc;
+  oldPc.close();
+  delete peerConnections[peerId];
+  
+  setTimeout(() => initiatePeerConnection(peerId, peerName), 2000);
 }
 
 socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
   if (!peerConnections[senderPeerId]) {
-    console.log(`[WebRTC] Signal received from unknown peer ${senderPeerId}, initiating...`);
     const peerName = onlineUsers[senderPeerId]?.name || 'Monkey';
     await initiatePeerConnection(senderPeerId, peerName);
   }
@@ -748,38 +763,48 @@ socket.on('webrtc-signal', async ({ senderPeerId, signal }) => {
   if (!conn) return;
 
   const pc = conn.pc;
-  const peerName = conn.peerName || senderPeerId;
+  const peerName = conn.peerName;
 
   try {
     if (signal.sdp) {
-      const offerCollision = signal.sdp.type === 'offer' && (conn.makingOffer || pc.signalingState !== 'stable');
-      conn.ignoreOffer = !conn.isPolite && offerCollision;
-      if (conn.ignoreOffer) return;
+      const offerCollision = (signal.sdp.type === 'offer') &&
+                             (conn.makingOffer || pc.signalingState !== 'stable');
 
-      conn.isSettingRemoteAnswerPending = signal.sdp.type === 'answer';
+      conn.ignoreOffer = !conn.isPolite && offerCollision;
+      if (conn.ignoreOffer) {
+        console.log(`[WebRTC] Ignoring offer collision from ${peerName}`);
+        return;
+      }
+
+      const isSettingRemoteAnswerPending = signal.sdp.type === 'answer';
+      conn.isSettingRemoteAnswerPending = isSettingRemoteAnswerPending;
       await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
       conn.isSettingRemoteAnswerPending = false;
-
-      // Flush ICE buffer
-      for (const candidate of conn.iceBuffer) {
-        try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
-      }
-      conn.iceBuffer = [];
 
       if (signal.sdp.type === 'offer') {
         await pc.setLocalDescription();
         applyBitrateLimits(pc);
         socket.emit('webrtc-signal', { targetPeerId: senderPeerId, signal: { sdp: pc.localDescription } });
       }
+
+      // Flush buffered ICE candidates
+      while (conn.iceBuffer.length > 0) {
+        const cand = conn.iceBuffer.shift();
+        try { await pc.addIceCandidate(cand); } catch (e) { console.warn(`[WebRTC] Buffered ICE error:`, e); }
+      }
     } else if (signal.candidate) {
-      if (pc.remoteDescription?.type) {
-        await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-      } else {
-        conn.iceBuffer.push(signal.candidate);
+      try {
+        if (pc.remoteDescription && !conn.isSettingRemoteAnswerPending) {
+          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        } else {
+          conn.iceBuffer.push(new RTCIceCandidate(signal.candidate));
+        }
+      } catch (err) {
+        if (!conn.ignoreOffer) console.error(`[WebRTC] ICE error for ${peerName}:`, err);
       }
     }
   } catch (err) {
-    console.error(`Signaling error for ${peerName}:`, err);
+    console.error(`[WebRTC] Signaling error for ${peerName}:`, err);
   }
 });
 
