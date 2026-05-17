@@ -21,36 +21,58 @@ function debug(...args) {
   if (process.env.DEBUG) console.log(...args);
 }
 
-const METERED_DOMAIN = process.env.METERED_DOMAIN;
-const METERED_API_KEY = process.env.METERED_API_KEY;
-const TURN_USERNAME = process.env.TURN_USERNAME || '4f896608fcb95956035370ff';
-const TURN_CREDENTIAL = process.env.TURN_CREDENTIAL || 'fsReP4d/VohYU6Ei';
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+
+const IPV6_STUN = { urls: 'stun:stun6.l.google.com:19302' };
+const GOOGLE_STUN = { urls: 'stun:stun.l.google.com:19302' };
 
 let fetchedIceServers = null;
 
 async function fetchTurnCredentials() {
-  if (!METERED_DOMAIN || !METERED_API_KEY) return null;
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) return null;
   try {
-    const url = `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`;
-    const res = await fetch(url);
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+    const res = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Tokens.json`,
+      { method: 'POST', headers: { Authorization: `Basic ${auth}` } }
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    console.log(`[TURN] Fetched credentials from Metered API (${data.length} iceServers):`, JSON.stringify(data));
-    return data;
+    const servers = [];
+    for (const entry of data.ice_servers) {
+      for (const url of entry.urls) {
+        const s = { urls: url };
+        if (url.startsWith('turn:') || url.startsWith('turns:')) {
+          s.username = entry.username;
+          s.credential = entry.credential;
+        }
+        servers.push(s);
+      }
+    }
+    console.log(`[TURN] Fetched ${servers.length} iceServers from Twilio:`, JSON.stringify(servers));
+    return servers;
   } catch (err) {
-    console.error('[TURN] Failed to fetch credentials from Metered API:', err.message);
+    console.error('[TURN] Failed to fetch Twilio credentials:', err.message);
     return null;
   }
 }
 
-const IPV6_STUN = { urls: 'stun:stun6.l.google.com:19302' };
-
 function buildRtcConfig() {
-  const mode = process.env.ICE_MODE || 'stun-only'; // stun-only | relay-only | normal
+  const mode = process.env.ICE_MODE || 'stun-only';
+
+  // Fallback if no Twilio credentials configured
+  if (!fetchedIceServers) {
+    const fallback = mode === 'stun-only'
+      ? { iceServers: [GOOGLE_STUN, IPV6_STUN] }
+      : { iceServers: [GOOGLE_STUN, IPV6_STUN], iceTransportPolicy: 'relay' };
+    return { ...fallback, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
+  }
+
+  const stunServers = fetchedIceServers.filter(s => s.urls.startsWith('stun:'));
+  const turnServers = fetchedIceServers.filter(s => s.urls.startsWith('turn:') || s.urls.startsWith('turns:'));
+
   if (mode === 'stun-only') {
-    const stunServers = fetchedIceServers?.length
-      ? fetchedIceServers.filter(s => s.urls?.startsWith('stun:'))
-      : [{ urls: 'stun:stun.relay.metered.ca:80' }];
     return {
       iceServers: [...stunServers, IPV6_STUN],
       bundlePolicy: 'max-bundle',
@@ -58,24 +80,19 @@ function buildRtcConfig() {
     };
   }
   if (mode === 'relay-only') {
-    const servers = fetchedIceServers || [
-      { urls: 'stun:stun.relay.metered.ca:80' },
-      { urls: 'turn:global.relay.metered.ca:80', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
-      { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
-      { urls: 'turn:global.relay.metered.ca:443', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
-      { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL }
-    ];
-    return { iceServers: [...servers, IPV6_STUN], iceTransportPolicy: 'relay', bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
+    return {
+      iceServers: [...turnServers, IPV6_STUN],
+      iceTransportPolicy: 'relay',
+      bundlePolicy: 'max-bundle',
+      iceCandidatePoolSize: 10
+    };
   }
   // normal mode (default)
-  const iceServers = fetchedIceServers || [
-    { urls: 'stun:stun.relay.metered.ca:80' },
-    { urls: 'turn:global.relay.metered.ca:80', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
-    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
-    { urls: 'turn:global.relay.metered.ca:443', username: TURN_USERNAME, credential: TURN_CREDENTIAL },
-    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: TURN_USERNAME, credential: TURN_CREDENTIAL }
-  ];
-  return { iceServers: [...iceServers, IPV6_STUN], bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
+  return {
+    iceServers: [...fetchedIceServers, IPV6_STUN],
+    bundlePolicy: 'max-bundle',
+    iceCandidatePoolSize: 10
+  };
 }
 
 async function refreshTurnCredentials() {
