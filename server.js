@@ -13,19 +13,20 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+const fs = require('fs');
+const publicDir = path.join(__dirname, 'public');
 
 function debug(...args) {
   if (process.env.DEBUG) console.log(...args);
 }
 
-app.get('/turn-credentials', (req, res) => {
+function getRtcConfig() {
   const username = process.env.TURN_USERNAME;
   const credential = process.env.TURN_CREDENTIAL;
   if (!username || !credential) {
-    return res.json({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    return { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }], bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
   }
-  res.json({
+  return {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       {
@@ -40,8 +41,14 @@ app.get('/turn-credentials', (req, res) => {
     ],
     bundlePolicy: 'max-bundle',
     iceCandidatePoolSize: 10
-  });
-});
+  };
+}
+
+const rtcConfigScript = `<script>window.__RTC_CONFIG = ${JSON.stringify(getRtcConfig())};</script>`;
+const indexHtml = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf-8').replace('</head>', rtcConfigScript + '</head>');
+
+app.get('/', (req, res) => res.type('html').send(indexHtml));
+app.use(express.static(publicDir));
 
 const loadCredentials = () => {
   const authEnv = process.env.AUTH_CREDENTIALS;

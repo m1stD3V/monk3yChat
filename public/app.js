@@ -16,18 +16,11 @@ const MSG_CACHE_KEY = 'mc_msg_cache';
 const MAX_CACHED_MSGS = 100; // per channel
 const MSG_GROUP_THRESHOLD = 5 * 60 * 1000; // 5 minutes → new group header
 
-let rtcConfig = {
+const rtcConfig = window.__RTC_CONFIG || {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   bundlePolicy: 'max-bundle',
   iceCandidatePoolSize: 10
 };
-
-(async () => {
-  try {
-    const res = await fetch('/turn-credentials');
-    if (res.ok) rtcConfig = await res.json();
-  } catch (e) { /* use default STUN */ }
-})();
 
 // ─── STATE ───────────────────────────────────────────────
 let localStream = null;
