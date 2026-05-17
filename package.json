@@ -23,6 +23,7 @@
   },
   "homepage": "https://github.com/m1stD3V/monk3yChat#readme",
   "dependencies": {
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3"
